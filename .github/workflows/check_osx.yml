@@ -14,7 +14,7 @@ jobs:
   check:
     strategy:
       matrix:
-        os: [macos-14]
+        os: [macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +23,7 @@ jobs:
 
       # - name: Check without default features
       #   run: cargo check --no-default-features --features notan/shaderc
-      #   if: matrix.os == 'macos-14'
+      #   if: matrix.os == 'macos-latest'
 
       - name: intel heif test
         run: |
@@ -58,18 +58,18 @@ jobs:
           codesign -s "-" -fv target/release/bundle/osx/oculante.app/Contents/Frameworks/libheif.1.dylib
           otool -L target/release/bundle/osx/oculante.app/Contents/MacOS/oculante
           cp Info.plist target/release/bundle/osx/oculante.app/Contents/Info.plist
-        if: matrix.os == 'macos-12'
+        if: matrix.os == 'macos-15-intel'
 
       - name: Zip Mac Intel Bundle
         run: mv target/release/bundle/osx/oculante.app . && zip -r oculante_app_intel.zip oculante.app
-        if: matrix.os == 'macos-12'
+        if: matrix.os == 'macos-15-intel'
 
       - name: Archive intel build
         uses: actions/upload-artifact@v4
         with:
           name: intel_build
           path: oculante_app_intel.zip
-        if: matrix.os == 'macos-12'
+        if: matrix.os == 'macos-15-intel'
 
       # - name: arm heif test
       #   run: |
@@ -104,35 +104,35 @@ jobs:
       #     codesign -s "-" -fv target/release/bundle/osx/oculante.app/Contents/Frameworks/libheif.1.dylib
       #     otool -L target/release/bundle/osx/oculante.app/Contents/MacOS/oculante
       #     cp Info.plist target/release/bundle/osx/oculante.app/Contents/Info.plist
-      #   if: matrix.os == 'macos-14'
+      #   if: matrix.os == 'macos-latest'
 
       # - name: Zip Mac Arm Bundle
       #   run: mv target/release/bundle/osx/oculante.app . && zip -r oculante_app_arm.zip oculante.app
-      #   if: matrix.os == 'macos-14'
+      #   if: matrix.os == 'macos-latest'
 
       # - name: Archive arm build
       #   uses: actions/upload-artifact@v4
       #   with:
       #     name: arm_build
       #     path: oculante_app_arm.zip
-      #   if: matrix.os == 'macos-14'
+      #   if: matrix.os == 'macos-latest'
 
       - name: Cargo build on Apple Silicon
         run: |
           rustc --version --verbose
           # cargo install cargo-bundle
           cargo build
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-latest'
 
       # - name: Zip Mac Arm Bundle
       #   run: |
       #     rm -rf oculante.app
       #     mv target/release/bundle/osx/oculante.app . && zip -r oculante_app_arm_noheif.zip oculante.app
-      #   if: matrix.os == 'macos-14'
+      #   if: matrix.os == 'macos-latest'
 
       # - name: Archive arm build
       #   uses: actions/upload-artifact@v4
       #   with:
       #     name: arm_build2
       #     path: oculante_app_arm_noheif.zip
-      #   if: matrix.os == 'macos-14'
+      #   if: matrix.os == 'macos-latest'
