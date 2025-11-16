@@ -1,6 +1,5 @@
 name: Bug report (oculante-next)
-about: Tell us about a problem!
-title: ""
+description: Tell us about a problem! (oculante-next)
 labels: "next"
 assignees: ""
 body:
@@ -10,6 +9,7 @@ body:
       description: Please confirm that you are reporting a bug on the oculante-next branch. If you are not, please use the regular bug report template.
       options:
         - label: This bug report is for oculante-next
+    validations:
       required: true
   - type: textarea
     attributes:
@@ -34,4 +34,5 @@ body:
       label: Commit Version
       description: Which commit are you using?
       placeholder: "a1b2c3d4"
+    validations:
       required: true
