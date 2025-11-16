@@ -1,7 +1,6 @@
 name: Bug report (oculante-next)
 description: Tell us about a problem! (oculante-next)
 labels: "next"
-assignees: ""
 body:
   - type: checkboxes
     attributes:
