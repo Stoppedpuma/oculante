@@ -10,6 +10,7 @@ use crate::settings::VolatileSettings;
 use crate::ui::annotate::AnnotateUi;
 use crate::ui::{
     BLACK, EguiExt, Opacity, RED, ToColor32, WHITE, YELLOW, contrast_gray, opacity, over_image,
+    window_id,
 };
 use crate::{appstate::ImageGeometry, utils::pos_from_coord};
 #[cfg(not(feature = "file_open"))]
@@ -562,10 +563,10 @@ impl ImageOperation {
                         #[cfg(not(feature = "file_open"))]
                         {
                             if ui.button("Load lut").clicked() {
-                                crate::ui::open_popup(ui.ctx(), Id::new("LUT"));
+                                crate::ui::open_popup(ui.ctx(), Id::new(window_id::LUT));
                             }
 
-                            if crate::ui::is_popup_open(ui.ctx(), Id::new("LUT")) {
+                            if crate::ui::is_popup_open(ui.ctx(), Id::new(window_id::LUT)) {
                                 filebrowser::browse_modal(
                                     false,
                                     SUPPORTED_EXTENSIONS,
@@ -575,7 +576,7 @@ impl ImageOperation {
                                         x.mark_changed();
                                     },
                                     ui.ctx(),
-                                    Id::new("LUT"),
+                                    Id::new(window_id::LUT),
                                 );
                             }
                         }

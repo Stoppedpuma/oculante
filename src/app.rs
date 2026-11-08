@@ -1035,7 +1035,7 @@ impl eframe::App for OculanteApp {
         // File browser
         #[cfg(not(feature = "file_open"))]
         {
-            if crate::ui::is_popup_open(ctx, Id::new("OPEN")) {
+            if crate::ui::is_popup_open(ctx, Id::new(crate::ui::window_id::OPEN)) {
                 crate::filebrowser::browse_modal(
                     false,
                     SUPPORTED_EXTENSIONS,
@@ -1044,7 +1044,7 @@ impl eframe::App for OculanteApp {
                         let _ = state.load_channel.0.clone().send(p.to_path_buf());
                     },
                     ctx,
-                    Id::new("OPEN"),
+                    Id::new(crate::ui::window_id::OPEN),
                 );
             }
         }
@@ -1334,7 +1334,7 @@ impl eframe::App for OculanteApp {
                 browse_for_image_path(state);
                 #[cfg(not(feature = "file_open"))]
                 {
-                    state.filebrowser_id = Some("OPEN".into());
+                    state.filebrowser_id = Some(crate::ui::window_id::OPEN.into());
                 }
             }
             #[cfg(feature = "turbo")]

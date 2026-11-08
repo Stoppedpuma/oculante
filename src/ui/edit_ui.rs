@@ -502,12 +502,12 @@ pub fn edit_ui(ui: &mut egui::Ui, state: &mut OculanteState) {
                 #[cfg(not(feature = "file_open"))]
                 if state.current_image.is_some() {
                     if ui.button("Save as...").clicked() {
-                        crate::ui::open_popup(ui.ctx(), Id::new("SAVE"));
+                        crate::ui::open_popup(ui.ctx(), Id::new(window_id::SAVE));
                     }
 
                     let encoding_options = state.volatile_settings.encoding_options.clone();
 
-                    if crate::ui::is_popup_open(ctx, Id::new("SAVE")) {
+                    if crate::ui::is_popup_open(ctx, Id::new(window_id::SAVE)) {
                         let msg_sender = state.message_channel.0.clone();
                         let keys = &state.volatile_settings.encoding_options.iter().map(|e|e.ext()).collect::<Vec<_>>();
                         let key_slice = keys.iter().map(|k|k.as_str()).collect::<Vec<_>>();
@@ -520,7 +520,7 @@ pub fn edit_ui(ui: &mut egui::Ui, state: &mut OculanteState) {
                                 _ = save_with_encoding(&state.edit_state.result_pixel_op, p, state.current_path.as_deref(), &encoders);
                             },
                             ctx,
-                            Id::new("SAVE"),
+                            Id::new(window_id::SAVE),
                         );
                     }
                 }
@@ -528,7 +528,7 @@ pub fn edit_ui(ui: &mut egui::Ui, state: &mut OculanteState) {
                 if let Some(p) = &state.current_path {
                     let text = if p.exists() { "Overwrite" } else { "Save"};
 
-                    let modal = Modal::new("overwrite", ui.ctx());
+                    let modal = Modal::new(window_id::OVERWRITE, ui.ctx());
                     modal.show(overwrite_question(state.animated), |_|{
                         _ = save_with_encoding(&state.edit_state.result_pixel_op, p, Some(p), &state.volatile_settings.encoding_options).map(|_| state.send_message_info("Saved")).map_err(|e| state.send_message_err(&format!("Error: {e}")));
                     });

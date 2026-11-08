@@ -19,6 +19,9 @@ use std::{
 };
 use strum::IntoEnumIterator;
 
+/// Where the file manager starts, in egui's temporary data. Set it before opening a file manager.
+pub(crate) const START_PATH_ID: &str = "FBPATH";
+
 pub fn browse_modal<F: FnMut(&PathBuf)>(
     save: bool,
     filter: &[&str],
@@ -28,7 +31,7 @@ pub fn browse_modal<F: FnMut(&PathBuf)>(
     popup_id: Id,
 ) {
     let mut path = ctx
-        .data(|r| r.get_temp::<PathBuf>(Id::new("FBPATH")))
+        .data(|r| r.get_temp::<PathBuf>(Id::new(START_PATH_ID)))
         .unwrap_or_else(|| settings.last_open_directory.clone());
 
     let mut open = true;
@@ -62,7 +65,7 @@ pub fn browse_modal<F: FnMut(&PathBuf)>(
             {
                 crate::ui::close_popup(ctx, popup_id);
             }
-            ctx.data_mut(|w| w.insert_temp(Id::new("FBPATH"), path));
+            ctx.data_mut(|w| w.insert_temp(Id::new(START_PATH_ID), path));
         });
     if !open {
         crate::ui::close_popup(ctx, popup_id);

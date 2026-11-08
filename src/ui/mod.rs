@@ -780,16 +780,31 @@ pub fn is_popup_open(ctx: &egui::Context, id: Id) -> bool {
     ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false))
 }
 
-/// The windows and questions that open over the image, besides the preferences: the file
-/// managers to open and to save an image, a palette and a LUT, and the questions before a file is
-/// deleted or overwritten
+/// Ids of the windows and questions that open over the image, besides the preferences. Opened,
+/// shown and closed by these names only, so `window_open` knows of each of them.
+pub mod window_id {
+    /// The file manager to open an image
+    pub const OPEN: &str = "OPEN";
+    /// The file manager to save the edited image
+    pub const SAVE: &str = "SAVE";
+    /// The file manager to save a palette as an ASE file
+    pub const SAVE_PALETTE: &str = "SAVEASE";
+    /// The file manager to pick a LUT
+    pub const LUT: &str = "LUT";
+    /// The question before a file is deleted
+    pub const DELETE: &str = "delete";
+    /// The question before a file is overwritten
+    pub const OVERWRITE: &str = "overwrite";
+}
+
+/// All of `window_id`
 const WINDOWS: [&str; 6] = [
-    "OPEN",
-    "SAVE",
-    "SAVEASE",
-    "LUT",
-    DELETE_MODAL_ID,
-    "overwrite",
+    window_id::OPEN,
+    window_id::SAVE,
+    window_id::SAVE_PALETTE,
+    window_id::LUT,
+    window_id::DELETE,
+    window_id::OVERWRITE,
 ];
 
 /// Whether a window or a question is open over the image: keys meant for the image are left to
@@ -876,8 +891,6 @@ impl Modal {
     }
 }
 
-const DELETE_MODAL_ID: &str = "delete";
-
 pub fn show_delete_confirmation_modal(ctx: &egui::Context, state: &mut OculanteState) {
     let Some(name) = state
         .current_path
@@ -888,14 +901,14 @@ pub fn show_delete_confirmation_modal(ctx: &egui::Context, state: &mut OculanteS
         return;
     };
 
-    Modal::new(DELETE_MODAL_ID, ctx).show(delete_question(&name, DELETE_TO_TRASH), |_| {
+    Modal::new(window_id::DELETE, ctx).show(delete_question(&name, DELETE_TO_TRASH), |_| {
         delete_file(state);
     });
 }
 
 pub fn request_delete_current_file(ctx: &egui::Context, state: &mut OculanteState) {
     if state.current_path.is_some() {
-        Modal::new(DELETE_MODAL_ID, ctx).open();
+        Modal::new(window_id::DELETE, ctx).open();
     } else {
         delete_file(state);
     }
