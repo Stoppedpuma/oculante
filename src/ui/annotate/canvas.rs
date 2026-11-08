@@ -279,6 +279,21 @@ fn round(v: [f32; 2]) -> [i32; 2] {
     [v[0].round() as i32, v[1].round() as i32]
 }
 
+/// Shift snap degree
+const SNAP_DEGREES: f32 = 15.;
+
+/// `to` turned around `from` to the nearest step of `SNAP_DEGREES`, as far from it as before
+pub(super) fn snap_angle(from: [f32; 2], to: [f32; 2]) -> [f32; 2] {
+    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+    let step = SNAP_DEGREES.to_radians();
+    let angle = (dy.atan2(dx) / step).round() * step;
+    let length = dx.hypot(dy);
+    [
+        from[0] + length * angle.cos(),
+        from[1] + length * angle.sin(),
+    ]
+}
+
 /// The list may have changed elsewhere: what was selected or typed and is gone is forgotten
 fn forget_what_is_gone(annotations: &[Annotation], state: &mut AnnotateUi) {
     state.selected.retain(|i| *i < annotations.len());
@@ -628,6 +643,13 @@ fn drag(
     match &state.drag {
         Some(Drag::Draw { index, from }) => {
             if let Some(a) = annotations.get_mut(*index) {
+                // with Shift a line or an arrow goes in steps as it is shown, also on an
+                // image that was turned or stretched
+                let o = if canvas.shift && matches!(a.shape, Shape::Arrow(_) | Shape::Line(_)) {
+                    mapping.to_original(snap_angle(mapping.to_result(*from), p))
+                } else {
+                    o
+                };
                 let mut d = [o[0] - from[0], o[1] - from[1]];
                 let squared = matches!(
                     a.shape,
@@ -641,7 +663,7 @@ fn drag(
                 let corner = [from[0] + d[0].min(0.), from[1] + d[1].min(0.)];
                 let size = round([d[0].abs(), d[1].abs()]);
                 match &mut a.shape {
-                    Shape::Arrow(to) => *to = round(d),
+                    Shape::Arrow(to) | Shape::Line(to) => *to = round(d),
                     Shape::Rect(s)
                     | Shape::Ellipse(s)
                     | Shape::Redact { size: s, .. }
@@ -700,9 +722,11 @@ fn drag(
         }) => {
             let by = [p[0] - from[0], p[1] - from[1]];
             let (scale, fixed) = stretch(*side, *shape, by, canvas.shift);
+            // a level or upright line is tilted by a corner
+            let tilt = corner_tilt(*side, *shape, by, canvas.shift);
             for (i, a) in before {
                 if let Some(slot) = annotations.get_mut(*i) {
-                    *slot = resized(a, mapping, fixed, scale);
+                    *slot = resized(a, mapping, fixed, scale, tilt);
                 }
             }
             let indices: Vec<usize> = before.iter().map(|(i, _)| *i).collect();
@@ -724,7 +748,7 @@ fn drag(
         }) => {
             let mut shown = wrap(base + angle_of(p, *pivot) - from);
             if canvas.shift {
-                shown = wrap((shown / 15.).round() * 15.);
+                shown = wrap((shown / SNAP_DEGREES).round() * SNAP_DEGREES);
             }
             let turn = wrap(shown - base).round() as i32;
             for (i, a) in before {

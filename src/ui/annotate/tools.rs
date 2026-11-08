@@ -7,6 +7,7 @@ pub enum Tool {
     /// Selects and moves, draws nothing
     Select,
     Arrow,
+    Line,
     Frame,
     Circle,
     Text,
@@ -19,12 +20,13 @@ pub enum Tool {
 
 impl Tool {
     /// Those that draw, a tile each
-    pub(super) const ALL: [Tool; 8] = [
+    pub(super) const ALL: [Tool; 9] = [
         Tool::Arrow,
         Tool::Frame,
         Tool::Circle,
         Tool::Text,
         Tool::Pen,
+        Tool::Line,
         Tool::Redact,
         Tool::Spotlight,
         Tool::Counter,
@@ -34,6 +36,7 @@ impl Tool {
         match self {
             Tool::Select => "Select",
             Tool::Arrow => "Arrow",
+            Tool::Line => "Line",
             Tool::Frame => "Frame",
             Tool::Circle => "Circle",
             Tool::Text => "Text",
@@ -53,7 +56,10 @@ impl Tool {
             Tool::Select => {
                 "Click what to change, drag a box over what to select, Ctrl+A selects everything"
             }
-            Tool::Arrow => "Drag from where the arrow starts to what it points at",
+            Tool::Arrow => {
+                "Drag from where the arrow starts to what it points at, with Shift in steps of 15°"
+            }
+            Tool::Line => "Drag a straight line, with Shift in steps of 15°",
             Tool::Frame => "Drag a frame around something, with Shift a square",
             Tool::Circle => "Drag a circle around something, with Shift a round one",
             Tool::Text => "Click where the text goes, click a text to change it",
@@ -71,6 +77,7 @@ impl Tool {
         match self {
             Tool::Select => Icon::Mouse,
             Tool::Arrow => Icon::Arrow,
+            Tool::Line => Icon::Line,
             Tool::Frame => Icon::Frame,
             Tool::Circle => Icon::Circle,
             Tool::Text => Icon::Text,
@@ -88,6 +95,7 @@ impl Tool {
 pub(super) enum Icon {
     Mouse,
     Arrow,
+    Line,
     Frame,
     Circle,
     Text,
@@ -129,6 +137,13 @@ pub(super) fn paint_icon(
                 stroke,
             ));
             for end in [at(2.5, 13.5), at(7., 3.), at(13., 3.), at(13., 9.)] {
+                painter.circle_filled(end, stroke.width / 2., color);
+            }
+        }
+        Icon::Line => {
+            let ends = [at(2.5, 13.5), at(13.5, 2.5)];
+            painter.line_segment(ends, stroke);
+            for end in ends {
                 painter.circle_filled(end, stroke.width / 2., color);
             }
         }

@@ -259,6 +259,7 @@ pub(super) fn touches(a: &Annotation, q: Point, slack: f32) -> bool {
                 .iter()
                 .any(|(p0, p1)| segment_distance(q, *p0, *p1) <= near),
         },
+        Shape::Line(to) => to_line([0, 0], *to) <= near,
         Shape::Rect(size) => {
             let (w, h) = (size[0] as f32, size[1] as f32);
             let r = a.corner_radius();

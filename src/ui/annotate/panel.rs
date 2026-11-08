@@ -326,7 +326,7 @@ fn options_ui(ui: &mut Ui, a: &mut Annotation, id: usize) -> bool {
     use crate::icons::{ARROWS_OUT, ARROWS_OUT_SIMPLE, PALETTE, PENCIL_SIMPLE_LINE};
     let before = a.clone();
     match &mut a.shape {
-        Shape::Arrow(_) | Shape::Ellipse(_) | Shape::Pen(_) => {
+        Shape::Arrow(_) | Shape::Line(_) | Shape::Ellipse(_) | Shape::Pen(_) => {
             slider_row(
                 ui,
                 format!("{PENCIL_SIMPLE_LINE} Width"),

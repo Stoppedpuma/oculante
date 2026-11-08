@@ -1,3 +1,4 @@
+use super::canvas::snap_angle;
 use super::*;
 use crate::annotate::tests::{arrow_at, item};
 
@@ -28,6 +29,39 @@ fn select_all_leaves_out_hidden_ones() {
     assert_eq!(state.selected, vec![0, 2]);
     state.select_all(&[]);
     assert!(state.selected.is_empty(), "nothing to select");
+}
+
+/// Shift keeps a line or an arrow to steps of 15°, as long as it was dragged
+#[test]
+fn shift_turns_lines_to_steps_of_15_degrees() {
+    let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01;
+    let from = [10., 20.];
+    // a little off straight to the right, down, left and up
+    for (to, snapped) in [
+        ([110., 27.], [10. + 100.245, 20.]),
+        ([13., 120.], [10., 20. + 100.045]),
+        ([-90., 15.], [10. - 100.125, 20.]),
+        ([7., -80.], [10., 20. - 100.045]),
+    ] {
+        let got = snap_angle(from, to);
+        assert!(
+            near(got, snapped),
+            "{to:?} goes to {got:?}, not {snapped:?}"
+        );
+    }
+    // to the nearest step, as long as before: 16.7° to 15°, 28.8° to 30°, 39.8° to 45°
+    for ((dx, dy), degrees) in [((100., 30.), 15f32), ((100., 55.), 30.), ((60., 50.), 45.)] {
+        let length = f32::hypot(dx, dy);
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let snapped = [10. + length * cos, 20. + length * sin];
+        let got = snap_angle(from, [10. + dx, 20. + dy]);
+        assert!(
+            near(got, snapped),
+            "{dx},{dy} goes to {got:?}, not {snapped:?}"
+        );
+    }
+    // not dragged, nothing to turn
+    assert!(near(snap_angle(from, from), from));
 }
 
 #[test]

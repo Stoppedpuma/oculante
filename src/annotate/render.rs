@@ -154,6 +154,11 @@ pub(super) fn draw<P: Pixel<Subpixel = u8>>(
                     layer.stroke_path(&path, &paint, &stroke, t, None);
                 }
             }
+            Shape::Line(to) => {
+                if let Some(line) = polyline(&[[0, 0], *to]) {
+                    layer.stroke_path(&line, &paint, &stroke, t, None);
+                }
+            }
             Shape::Rect(size) => {
                 if let Some(frame) = frame_path(*size, a.corner_radius()) {
                     let stroke = tiny_skia::Stroke {

@@ -1,4 +1,4 @@
-//! Arrows, frames, circles, stamps, text, pen lines and hidden areas drawn over the edited image.
+//! Arrows, lines, frames, circles, stamps, text, pen lines and hidden areas drawn over the edited image.
 //! They are stored in pixels of the loaded image, so crops, resizes, rotations and flips carry them along.
 //! `geometry` places them, `text` lays out their text, and `render` draws them. Editing UI is in `crate::ui::annotate`.
 
@@ -94,6 +94,8 @@ impl Default for Font {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize)]
 pub enum Shape {
     Arrow([i32; 2]),
+    /// A straight line from where it starts to this point, an arrow without a head
+    Line([i32; 2]),
     Rect([i32; 2]),
     Ellipse([i32; 2]),
     Text(String),
@@ -298,7 +300,7 @@ impl Annotation {
             })
         };
         match &self.shape {
-            Shape::Arrow(to) => around(&[[0, 0], *to]),
+            Shape::Arrow(to) | Shape::Line(to) => around(&[[0, 0], *to]),
             Shape::Rect(size)
             | Shape::Ellipse(size)
             | Shape::Redact { size, .. }
@@ -320,7 +322,7 @@ impl Annotation {
                 let length = (to[0] as f32).hypot(to[1] as f32);
                 arrow_head(self.line_width(), length).1 + half + outline
             }
-            Shape::Rect(_) | Shape::Ellipse(_) | Shape::Pen(_) => half + outline,
+            Shape::Line(_) | Shape::Rect(_) | Shape::Ellipse(_) | Shape::Pen(_) => half + outline,
             Shape::Text(_) | Shape::Stamp(_) | Shape::Counter(_) => outline,
             Shape::Redact { .. } | Shape::Spotlight { .. } => 0.,
         }
@@ -351,7 +353,7 @@ impl Annotation {
     /// Too small to be seen, or a text without any
     pub(crate) fn is_empty(&self) -> bool {
         match &self.shape {
-            Shape::Arrow(to) => to[0].abs().max(to[1].abs()) < 2,
+            Shape::Arrow(to) | Shape::Line(to) => to[0].abs().max(to[1].abs()) < 2,
             Shape::Rect(size)
             | Shape::Ellipse(size)
             | Shape::Redact { size, .. }
@@ -428,6 +430,7 @@ impl Annotation {
     pub(crate) fn label(&self) -> String {
         match &self.shape {
             Shape::Arrow(_) => "Arrow".into(),
+            Shape::Line(_) => "Line".into(),
             Shape::Rect(_) => "Frame".into(),
             Shape::Ellipse(_) => "Circle".into(),
             Shape::Pen(_) => "Pen".into(),

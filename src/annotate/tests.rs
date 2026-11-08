@@ -242,6 +242,17 @@ fn drawn_a_change_at_a_time_is_drawn_at_once() {
         Box::new(|a| a[6].shape = Shape::Stamp(Stamp::Warning)),
         Box::new(|a| a[6].width = 80),
         Box::new(|a| a[6].outline = 5),
+        // a line, moved, then with an outline
+        Box::new(|a| {
+            a.push(Annotation::new(
+                Shape::Line([-120, 60]),
+                [0, 200, 255, 255],
+                5,
+                [260, 60],
+            ))
+        }),
+        Box::new(|a| a[7].offset = [200, 100]),
+        Box::new(|a| a[7].outline = 3),
     ];
     for (i, change) in changes.iter().enumerate() {
         change(&mut annotations);
@@ -441,6 +452,48 @@ fn clicks_hit_what_is_drawn() {
     assert!(hits(&text, &mapping, [30., 220.], 0.));
 }
 
+/// A line is an arrow without its head, drawn, hit and saved as one
+#[test]
+fn a_line_is_an_arrow_without_a_head() {
+    let img = RgbaImage::from_pixel(200, 100, Rgba([0, 0, 0, 255]));
+    let mapping = Mapping::new(&[], (200, 100));
+    let red = [255, 0, 0, 255];
+    let line = Annotation::new(Shape::Line([100, 0]), red, 6, [50, 50]);
+    let arrow = Annotation::new(Shape::Arrow([100, 0]), red, 6, [50, 50]);
+    let drawn = drawn_at_once(&img, std::slice::from_ref(&line), &mapping);
+    let with_head = drawn_at_once(&img, std::slice::from_ref(&arrow), &mapping);
+    for x in [50, 100, 149] {
+        assert_eq!(drawn.get_pixel(x, 50).0, red, "no line at {x},50");
+    }
+    // halfway along a line of the head, where the line has nothing
+    let [tip, left, _] = arrow_head_corners([100, 0], 6.).expect("a head");
+    let (x, y) = (50. + (tip.x + left.x) / 2., 50. + (tip.y + left.y) / 2.);
+    assert_eq!(
+        with_head.get_pixel(x as u32, y as u32).0,
+        red,
+        "the arrow has a head"
+    );
+    assert_eq!(
+        drawn.get_pixel(x as u32, y as u32).0,
+        [0, 0, 0, 255],
+        "the line has none"
+    );
+    assert!(hits(&line, &mapping, [100., 52.], 2.));
+    assert!(!hits(&line, &mapping, [100., 80.], 2.));
+    assert!(!hits(&line, &mapping, [x, y], 1.), "no head to hit");
+    assert!(!hits(&line, &mapping, [160., 50.], 2.), "not past its end");
+    assert_eq!(line.label(), "Line");
+    assert!(Annotation::new(Shape::Line([1, -1]), red, 6, [50, 50]).is_empty());
+    assert_eq!(
+        serde_json::to_string(&line.shape).unwrap(),
+        r#"{"Line":[100,0]}"#
+    );
+    let op = ImageOperation::Annotate(vec![line]);
+    let json = serde_json::to_string(&op).expect("saved");
+    let back: ImageOperation = serde_json::from_str(&json).expect("read");
+    assert_eq!(op, back);
+}
+
 #[test]
 fn circles_are_drawn_and_hit() {
     let img = RgbaImage::from_pixel(100, 100, Rgba([0, 0, 0, 255]));
@@ -577,6 +630,7 @@ fn outlines_are_not_cut_off() {
     };
     let shapes = [
         Shape::Arrow([120, -60]),
+        Shape::Line([-90, 70]),
         Shape::Rect([80, 50]),
         Shape::Ellipse([80, 50]),
         Shape::Pen(vec![[0, 0], [40, 30], [90, -10]]),
@@ -853,14 +907,14 @@ fn stretched_by_the_handles() {
     // the bottom right corner twice as far, the top left stays
     let (scale, fixed) = stretch([1, 1], shape, [40., 20.], false);
     assert_eq!((scale, fixed), ([2., 2.], [100., 100.]));
-    let larger = resized(&frame, &mapping, fixed, scale);
+    let larger = resized(&frame, &mapping, fixed, scale, [0., 0.]);
     assert_eq!(larger.shape, Shape::Rect([80, 40]));
     assert_eq!(larger.start(mapping.original), [100, 100]);
     assert_eq!(larger.width, 4, "lines keep their width");
     // the left side, the right one stays
     let (scale, fixed) = stretch([-1, 0], shape, [-40., 30.], false);
     assert_eq!((scale, fixed), ([2., 1.], [140., 110.]));
-    let wider = resized(&frame, &mapping, fixed, scale);
+    let wider = resized(&frame, &mapping, fixed, scale, [0., 0.]);
     assert_eq!(wider.shape, Shape::Rect([80, 20]));
     assert_eq!(wider.start(mapping.original), [60, 100]);
     // with Shift it keeps its proportions, the corner along the diagonal
@@ -890,7 +944,7 @@ fn mirrored_when_dragged_past_the_other_side() {
     let shape = [100., 100., 140., 120.];
     // the right side dragged 60 to the left: 20 wide on the other side of 100
     let (scale, fixed) = stretch([1, 0], shape, [-60., 0.], false);
-    let mut list = vec![resized(&arrow, &mapping, fixed, scale)];
+    let mut list = vec![resized(&arrow, &mapping, fixed, scale, [0., 0.])];
     keep_in_place(&mut list, &[0], &mapping, [1, 0], fixed, scale);
     let after = selection_bounds(&list, &[0], &mapping).unwrap().shape;
     assert!(
@@ -899,12 +953,98 @@ fn mirrored_when_dragged_past_the_other_side() {
     );
     assert!((after[1] - 100.).abs() < 0.01 && (after[3] - 120.).abs() < 0.01);
     // it points the other way, to the bottom left
-    let mut tip = Point::from_xy(20., 20.);
+    let Shape::Arrow(to) = list[0].shape else {
+        panic!("still an arrow")
+    };
+    let mut tip = Point::from_xy(to[0] as f32, to[1] as f32);
     list[0].transform(&mapping).map_point(&mut tip);
     assert!(
         (tip.x - 80.).abs() < 1. && (tip.y - 120.).abs() < 1.,
         "{tip:?}"
     );
+}
+
+/// Where the ends of a line or an arrow are in the edited image
+fn ends_of(a: &Annotation, mapping: &Mapping) -> [[f32; 2]; 2] {
+    let (Shape::Line(to) | Shape::Arrow(to)) = a.shape else {
+        panic!("{:?} has no ends", a.shape)
+    };
+    let mut ends = [Point::zero(), Point::from_xy(to[0] as f32, to[1] as f32)];
+    a.transform(mapping).map_points(&mut ends);
+    ends.map(|p| [p.x, p.y])
+}
+
+fn near(a: [[f32; 2]; 2], b: [[f32; 2]; 2]) -> bool {
+    a.iter()
+        .flatten()
+        .zip(b.iter().flatten())
+        .all(|(a, b)| (a - b).abs() <= 1.)
+}
+
+/// A level line has a box with no height: a corner could only make it longer. It tilts it,
+/// the end at that corner follows the mouse, the other stays, also past the line.
+#[test]
+fn a_level_line_is_tilted_by_a_corner() {
+    let mapping = Mapping::new(&[], (400, 400));
+    let line = Annotation::new(Shape::Line([80, 0]), [0; 4], 4, [100, 100]);
+    let shape = selection_bounds(std::slice::from_ref(&line), &[0], &mapping)
+        .unwrap()
+        .shape;
+    assert_eq!(shape, [100., 100., 180., 100.]);
+    for (side, by, ends) in [
+        // the top right corner up and to the right
+        ([1, -1], [20., -30.], [[100., 100.], [200., 70.]]),
+        // and down, past the line
+        ([1, -1], [0., 30.], [[100., 100.], [180., 130.]]),
+        // the bottom left corner down and to the left, the right end stays
+        ([-1, 1], [-10., 40.], [[90., 140.], [180., 100.]]),
+        // the middle of a side only makes it longer
+        ([1, 0], [20., 15.], [[100., 100.], [200., 100.]]),
+    ] {
+        let (scale, fixed) = stretch(side, shape, by, false);
+        let tilt = corner_tilt(side, shape, by, false);
+        let mut list = vec![resized(&line, &mapping, fixed, scale, tilt)];
+        keep_in_place(&mut list, &[0], &mapping, side, fixed, scale);
+        let got = ends_of(&list[0], &mapping);
+        assert!(near(got, ends), "{side:?} by {by:?}: {got:?}, not {ends:?}");
+    }
+    // with Shift it keeps its proportions, it stays level
+    assert_eq!(corner_tilt([1, -1], shape, [20., -30.], true), [0., 0.]);
+    // an upright one tilts left and right
+    let upright = Annotation::new(Shape::Line([0, 80]), [0; 4], 4, [100, 100]);
+    let shape = [100., 100., 100., 180.];
+    let (scale, fixed) = stretch([1, 1], shape, [25., 0.], false);
+    let tilt = corner_tilt([1, 1], shape, [25., 0.], false);
+    let tilted = resized(&upright, &mapping, fixed, scale, tilt);
+    let got = ends_of(&tilted, &mapping);
+    assert!(near(got, [[100., 100.], [125., 180.]]), "{got:?}");
+}
+
+/// Stretched along its own sides, a turned line could only get longer or shorter. Its ends go
+/// where the box takes them, it keeps its turn.
+#[test]
+fn a_turned_line_gets_steeper() {
+    let mapping = Mapping::new(&[], (400, 400));
+    let mut line = Annotation::new(Shape::Line([40, 0]), [0; 4], 4, [100, 100]);
+    line.rotation = 45;
+    let [start, end] = ends_of(&line, &mapping);
+    let shape = [start[0], start[1], end[0], end[1]];
+    // the bottom right corner twice as far down
+    let (scale, fixed) = stretch([1, 1], shape, [0., end[1] - start[1]], false);
+    let steeper = resized(&line, &mapping, fixed, scale, [0., 0.]);
+    let want = [start, [end[0], start[1] + 2. * (end[1] - start[1])]];
+    let got = ends_of(&steeper, &mapping);
+    assert!(near(got, want), "{got:?}, not {want:?}");
+    assert_eq!(steeper.rotation, 45, "it keeps its turn");
+    // an arrow too, and its head points where its end went
+    let arrow = Annotation::new(Shape::Arrow([40, 0]), [0; 4], 4, [100, 100]);
+    let (scale, fixed) = stretch([1, 1], [100., 100., 140., 100.], [0., 30.], false);
+    let tilt = corner_tilt([1, 1], [100., 100., 140., 100.], [0., 30.], false);
+    let tilted = resized(&arrow, &mapping, fixed, scale, tilt);
+    assert!(near(
+        ends_of(&tilted, &mapping),
+        [[100., 100.], [140., 130.]]
+    ));
 }
 
 #[test]
@@ -927,7 +1067,7 @@ fn what_stays_stays_where_it_is() {
         for keep in [false, true] {
             let (scale, fixed) = stretch(side, shape, by, keep);
             for i in 0..list.len() {
-                list[i] = resized(&before[i], &mapping, fixed, scale);
+                list[i] = resized(&before[i], &mapping, fixed, scale, [0., 0.]);
             }
             keep_in_place(&mut list, &[0, 1, 2], &mapping, side, fixed, scale);
             let after = selection_bounds(&list, &[0, 1, 2], &mapping).unwrap().shape;
@@ -952,12 +1092,12 @@ fn what_stays_stays_where_it_is() {
 fn texts_and_stamps_grow_as_they_are_stretched() {
     let mapping = Mapping::new(&[], (400, 400));
     let stamp = Annotation::new(Shape::Stamp(Stamp::Check), [0; 4], 40, [100, 100]);
-    let larger = resized(&stamp, &mapping, [100., 100.], [1.5, 1.]);
+    let larger = resized(&stamp, &mapping, [100., 100.], [1.5, 1.], [0., 0.]);
     assert_eq!(larger.width, 60, "as much as the side that stretches most");
     // a turned frame is stretched along its own sides
     let mut frame = Annotation::new(Shape::Rect([40, 20]), [0; 4], 4, [100, 100]);
     frame.rotation = 90;
-    let wider = resized(&frame, &mapping, [0., 0.], [1., 2.]);
+    let wider = resized(&frame, &mapping, [0., 0.], [1., 2.], [0., 0.]);
     assert_eq!(wider.shape, Shape::Rect([80, 20]));
 }
 

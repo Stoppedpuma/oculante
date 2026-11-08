@@ -75,6 +75,7 @@ impl Style {
         let (shape, color, width) = match tool {
             Tool::Select => return None,
             Tool::Arrow => (Shape::Arrow([0, 0]), self.color, self.width),
+            Tool::Line => (Shape::Line([0, 0]), self.color, self.width),
             Tool::Frame => (Shape::Rect([0, 0]), self.color, self.width),
             Tool::Circle => (Shape::Ellipse([0, 0]), self.color, self.width),
             Tool::Pen => (Shape::Pen(vec![[0, 0]]), self.color, self.width),
@@ -142,7 +143,9 @@ impl Style {
                 self.width = a.width;
                 self.radius = a.radius;
             }
-            Shape::Arrow(_) | Shape::Ellipse(_) | Shape::Pen(_) => self.width = a.width,
+            Shape::Arrow(_) | Shape::Line(_) | Shape::Ellipse(_) | Shape::Pen(_) => {
+                self.width = a.width
+            }
             Shape::Stamp(_) => self.stamp_size = a.width,
             // its color is that of the others
             Shape::Counter(_) => {

@@ -148,18 +148,64 @@ pub(crate) fn stretch(
         }
     } else {
         scale = [at_least(scale[0], least(0)), at_least(scale[1], least(1))];
+        // a flat one is tilted by a corner instead, see `corner_tilt`: dragged past its line
+        // it is mirrored
+        for axis in 0..2 {
+            if tilts(side, shape, axis) && by[axis] * f32::from(side[axis]) < 0. {
+                scale[axis] = -1.;
+            }
+        }
     }
     (scale, fixed)
 }
 
-/// Stretches the annotation by `scale` on each side, anchored at `fixed`.
-/// A negative scale mirrors it. Line widths stay put, while text, stamps and counters grow with the side that stretches most.
+/// Whether the box is flat along `axis`, so a corner `side` tilts it instead of stretching it.
+fn tilts(side: [i8; 2], shape: [f32; 4], axis: usize) -> bool {
+    let other = 1 - axis;
+    let length = |axis: usize| shape[axis + 2] - shape[axis];
+    side[axis] != 0 && side[other] != 0 && length(axis) <= 0.01 && length(other) > 0.01
+}
+
+/// Tilt factor for a flat box dragged from a corner, or zero if nothing tilts. The dragged end
+/// moves with the mouse, and the other end stays put. `keep` disables tilting.
+pub(crate) fn corner_tilt(side: [i8; 2], shape: [f32; 4], by: [f32; 2], keep: bool) -> [f32; 2] {
+    let mut tilt = [0f32; 2];
+    if keep {
+        return tilt;
+    }
+    for axis in 0..2 {
+        let other = 1 - axis;
+        if tilts(side, shape, axis) {
+            // from what stays to the dragged side
+            let (lo, hi) = (shape[other], shape[other + 2]);
+            let along = if side[other] < 0 { lo - hi } else { hi - lo };
+            tilt[axis] = by[axis] / along;
+        }
+    }
+    tilt
+}
+
+/// Stretches the annotation by `scale` on each side, anchored at `fixed`, and tilts it by `tilt`
+/// as a corner does a flat box (see `corner_tilt`, only lines and arrows tilt: what else is in a
+/// flat box is flat as well). A negative scale mirrors it. Line widths stay put, while text,
+/// stamps and counters grow with the side that stretches most.
 pub(crate) fn resized(
     a: &Annotation,
     mapping: &Mapping,
     fixed: [f32; 2],
     scale: [f32; 2],
+    tilt: [f32; 2],
 ) -> Annotation {
+    let moved = with_ends_moved(a, mapping, |p| {
+        let d = [p[0] - fixed[0], p[1] - fixed[1]];
+        [
+            fixed[0] + d[0] * scale[0] + d[1] * tilt[0],
+            fixed[1] + d[1] * scale[1] + d[0] * tilt[1],
+        ]
+    });
+    if let Some(moved) = moved {
+        return moved;
+    }
     let mut a = a.clone();
     let Some(middle) = middle_in(&a, mapping) else {
         return a;
@@ -183,7 +229,7 @@ pub(crate) fn resized(
     };
     let times = |v: i32, k: f32| (v as f32 * k).round() as i32;
     match &mut a.shape {
-        Shape::Arrow(to) => *to = [times(to[0], k[0]), times(to[1], k[1])],
+        Shape::Arrow(to) | Shape::Line(to) => *to = [times(to[0], k[0]), times(to[1], k[1])],
         Shape::Rect(s)
         | Shape::Ellipse(s)
         | Shape::Redact { size: s, .. }
@@ -214,6 +260,38 @@ pub(crate) fn resized(
         }
     }
     a
+}
+
+// Returns the line or arrow moved by `place` in the edited image, or `None` for other shapes. Its ends follow the box exactly, including rotation, so it keeps its angle, flip, and line width.
+fn with_ends_moved(
+    a: &Annotation,
+    mapping: &Mapping,
+    place: impl Fn([f32; 2]) -> [f32; 2],
+) -> Option<Annotation> {
+    let (Shape::Arrow(to) | Shape::Line(to)) = a.shape else {
+        return None;
+    };
+    let mut ends = [Point::zero(), Point::from_xy(to[0] as f32, to[1] as f32)];
+    a.transform(mapping).map_points(&mut ends);
+    let [start, end] = ends.map(|p| mapping.to_original(place([p.x, p.y])));
+    // back into its own coordinates: turned back, then flipped back
+    let (dx, dy) = (end[0] - start[0], end[1] - start[1]);
+    let (sin, cos) = (-(a.rotation as f32)).to_radians().sin_cos();
+    let mut own = [dx * cos - dy * sin, dx * sin + dy * cos];
+    for (axis, flipped) in a.flip.iter().enumerate() {
+        if *flipped {
+            own[axis] = -own[axis];
+        }
+    }
+    let mut a = a.clone();
+    a.set_start(
+        [start[0].round() as i32, start[1].round() as i32],
+        mapping.original,
+    );
+    if let Shape::Arrow(to) | Shape::Line(to) = &mut a.shape {
+        *to = [own[0].round() as i32, own[1].round() as i32];
+    }
+    Some(a)
 }
 
 /// Shifts the annotations at `indices` together so the side or corner that should

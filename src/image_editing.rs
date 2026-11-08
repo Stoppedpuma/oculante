@@ -9,8 +9,7 @@ use crate::paint::{PaintStroke, Pixels, StrokeDrawing, channels};
 use crate::settings::VolatileSettings;
 use crate::ui::annotate::AnnotateUi;
 use crate::ui::{
-    BLACK, EguiExt, Opacity, RED, ToColor32, WHITE, YELLOW, contrast_gray, opacity,
-    over_image,
+    BLACK, EguiExt, Opacity, RED, ToColor32, WHITE, YELLOW, contrast_gray, opacity, over_image,
 };
 use crate::{appstate::ImageGeometry, utils::pos_from_coord};
 #[cfg(not(feature = "file_open"))]
