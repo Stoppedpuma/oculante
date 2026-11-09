@@ -11,7 +11,7 @@ pub(super) fn menu_ui(
     at: Pos2,
 ) {
     let any_turned = state
-        .selected
+        .shown(annotations)
         .iter()
         .any(|i| annotations.get(*i).is_some_and(|a| turned(a, mapping)));
     let (mut reset, mut delete) = (false, false);
@@ -30,13 +30,15 @@ pub(super) fn menu_ui(
                 });
             });
         });
+    // hidden annotations are left as they are
     if reset {
-        reset_rotation(annotations, &state.selected, mapping);
+        let shown = state.shown(annotations);
+        reset_rotation(annotations, &shown, mapping);
         state.menu = None;
     }
     if delete {
-        let selected = state.selected.clone();
-        state.remove(annotations, selected);
+        let shown = state.shown(annotations);
+        state.remove(annotations, shown);
         state.menu = None;
     }
 }

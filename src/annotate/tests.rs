@@ -1583,3 +1583,182 @@ fn a_shadow_is_as_dark_at_the_edge_of_the_image() {
         assert!(a[0] < 150, "a shadow at {x},{y}: {a:?}");
     }
 }
+
+/// An arrow with transparency and an outline with its own color in the middle and the outline is around
+/// it. the outline does not show through it.
+#[test]
+fn an_outline_does_not_show_through_what_it_is_around() {
+    let mapping = Mapping::new(&[], (200, 200));
+    let black = [0, 0, 0, 255];
+    let img = RgbaImage::from_pixel(200, 200, Rgba(black));
+    let mut arrow = Annotation::new(Shape::Arrow([160, 0]), [255, 0, 0, 128], 8, [20, 100]);
+    let without = drawn_at_once(&img, std::slice::from_ref(&arrow), &mapping);
+    arrow.outline = 3;
+    arrow.outline_color = [255, 255, 255, 255];
+    let with = drawn_at_once(&img, std::slice::from_ref(&arrow), &mapping);
+    // half red over black, with an outline or without
+    let middle = with.get_pixel(60, 100).0;
+    assert_eq!(middle, without.get_pixel(60, 100).0);
+    assert!(
+        middle[0] > 120 && middle[1] < 5 && middle[2] < 5,
+        "{middle:?}"
+    );
+    // the outline is white, at the side of the line
+    assert_eq!(with.get_pixel(60, 106).0, [255, 255, 255, 255]);
+    // a see-through outline is the outline's color over the image only
+    arrow.outline_color = [255, 255, 255, 128];
+    let faint = drawn_at_once(&img, std::slice::from_ref(&arrow), &mapping);
+    assert_eq!(faint.get_pixel(60, 100).0, middle);
+    let rim = faint.get_pixel(60, 106).0;
+    assert!(rim[0].abs_diff(128) <= 1 && rim[0] == rim[1], "{rim:?}");
+}
+
+/// A see-through frame with a shadow is as light where it is as without one, the shadow is only
+/// around it. Its line was dark.
+#[test]
+fn a_shadow_does_not_show_through_what_casts_it() {
+    let mapping = Mapping::new(&[], (200, 200));
+    let ground = [200, 200, 200, 255];
+    let img = RgbaImage::from_pixel(200, 200, Rgba(ground));
+    let mut frame = Annotation::new(Shape::Rect([100, 100]), [255, 0, 0, 128], 10, [50, 50]);
+    let without = drawn_at_once(&img, std::slice::from_ref(&frame), &mapping);
+    (frame.shadow, frame.shadow_size) = (80, 12);
+    let with = drawn_at_once(&img, std::slice::from_ref(&frame), &mapping);
+    // on the line
+    assert_eq!(with.get_pixel(100, 50).0, without.get_pixel(100, 50).0);
+    assert_eq!(with.get_pixel(50, 100).0, without.get_pixel(50, 100).0);
+    // just out of the line it is dark
+    let out = with.get_pixel(100, 58).0;
+    assert!(out[1] < 150, "{out:?}");
+    // as with a counter, its number on top
+    let mut counter = Annotation::new(Shape::Counter(1), [0, 0, 255, 128], 60, [70, 70]);
+    let without = drawn_at_once(&img, std::slice::from_ref(&counter), &mapping);
+    (counter.shadow, counter.shadow_size) = (100, 10);
+    counter.outline = 3;
+    let with_outline = {
+        let mut c = counter.clone();
+        (c.shadow, c.shadow_size) = (0, 0);
+        drawn_at_once(&img, &[c], &mapping)
+    };
+    let with = drawn_at_once(&img, std::slice::from_ref(&counter), &mapping);
+    for (x, y) in [(80, 100), (100, 80), (100, 100)] {
+        assert_eq!(with.get_pixel(x, y).0, without.get_pixel(x, y).0, "{x},{y}");
+        assert_eq!(
+            with.get_pixel(x, y).0,
+            with_outline.get_pixel(x, y).0,
+            "{x},{y}"
+        );
+    }
+}
+
+/// A see-through text with an outline shows the outline around its letters only
+#[test]
+fn a_see_through_text_does_not_show_its_outline_through() {
+    let mapping = Mapping::new(&[], (300, 120));
+    let img = RgbaImage::from_pixel(300, 120, Rgba([0, 0, 0, 255]));
+    let mut text = Annotation::new(Shape::Text("IIII".into()), [255, 0, 0, 128], 80, [20, 10]);
+    let without = drawn_at_once(&img, std::slice::from_ref(&text), &mapping);
+    text.outline = 4;
+    let with = drawn_at_once(&img, std::slice::from_ref(&text), &mapping);
+    // where the letters are filled the same, red over black
+    let filled: Vec<(u32, u32)> = (0..300)
+        .flat_map(|x| (0..120).map(move |y| (x, y)))
+        .filter(|&(x, y)| without.get_pixel(x, y).0[0] >= 127)
+        .filter(|&(x, y)| {
+            // well inside a letter
+            [(-2i32, 0i32), (2, 0), (0, -2), (0, 2)]
+                .iter()
+                .all(|(dx, dy)| {
+                    let (x, y) = (x as i32 + dx, y as i32 + dy);
+                    (0..300).contains(&x)
+                        && (0..120).contains(&y)
+                        && without.get_pixel(x as u32, y as u32).0[0] >= 127
+                })
+        })
+        .collect();
+    assert!(filled.len() > 50, "letters are drawn");
+    for (x, y) in filled {
+        let p = with.get_pixel(x, y).0;
+        assert!(p[1] < 5 && p[2] < 5, "white shows at {x},{y}: {p:?}");
+    }
+    // and the outline is there
+    assert!(with.pixels().any(|p| p.0 == [255, 255, 255, 255]));
+}
+
+/// After a color type operation the image may be gray, 16 bit or floating point. Annotations
+/// are drawn there too: they were left out, and saved or copied the image showed what they hide.
+#[test]
+fn drawn_in_every_layout() {
+    use image::DynamicImage;
+    let rgba = gradient(120, 90);
+    let mapping = Mapping::new(&[], (120, 90));
+    let redaction = |at: [i32; 2]| {
+        Annotation::new(
+            Shape::Redact {
+                size: [30, 20],
+                style: Redaction::Fill,
+            },
+            [255, 255, 255, 255],
+            1,
+            at,
+        )
+    };
+    let frame = Annotation::new(Shape::Rect([40, 30]), [255, 0, 0, 128], 4, [60, 40]);
+    let layouts = [
+        DynamicImage::ImageLuma8(DynamicImage::ImageRgba8(rgba.clone()).to_luma8()),
+        DynamicImage::ImageLumaA8(DynamicImage::ImageRgba8(rgba.clone()).to_luma_alpha8()),
+        DynamicImage::ImageLuma16(DynamicImage::ImageRgba8(rgba.clone()).to_luma16()),
+        DynamicImage::ImageLumaA16(DynamicImage::ImageRgba8(rgba.clone()).to_luma_alpha16()),
+        DynamicImage::ImageRgb16(DynamicImage::ImageRgba8(rgba.clone()).to_rgb16()),
+        DynamicImage::ImageRgba16(DynamicImage::ImageRgba8(rgba.clone()).to_rgba16()),
+        DynamicImage::ImageRgb32F(DynamicImage::ImageRgba8(rgba.clone()).to_rgb32f()),
+        DynamicImage::ImageRgba32F(DynamicImage::ImageRgba8(rgba.clone()).to_rgba32f()),
+    ];
+    for mut original in layouts {
+        let color = original.color();
+        // depth that 8 bits do not have, to see that it is kept
+        if let DynamicImage::ImageRgba16(p) = &mut original {
+            p.pixels_mut().for_each(|p| p.0[0] |= 0x55);
+        }
+        if let DynamicImage::ImageRgb32F(p) = &mut original {
+            p.pixels_mut().for_each(|p| p.0[1] += 0.0007);
+        }
+        let mut img = original.clone();
+        let mut layer = AnnotationLayer::default();
+        let mut annotations = vec![redaction([10, 10]), frame.clone()];
+        let changed = layer.update_image(&mut img, &annotations, &mapping);
+        assert!(changed.is_some(), "{color:?}");
+        assert_eq!(img.color(), color);
+        // hidden under white
+        let white = img.to_rgba8().get_pixel(20, 20).0;
+        assert_eq!(white[..3], [255, 255, 255], "{color:?}");
+        // the frame is drawn
+        assert_ne!(
+            img.to_rgba8().get_pixel(60, 55),
+            original.to_rgba8().get_pixel(60, 55),
+            "{color:?}"
+        );
+        // besides them, all is as it was, to the last bit
+        let pixel = |img: &DynamicImage, x: u32, y: u32| {
+            let n = color.bytes_per_pixel() as usize;
+            let at = (y as usize * img.width() as usize + x as usize) * n;
+            img.as_bytes()[at..at + n].to_vec()
+        };
+        for (x, y) in [(5, 5), (50, 15), (80, 55), (110, 85)] {
+            assert_eq!(
+                pixel(&img, x, y),
+                pixel(&original, x, y),
+                "{color:?} at {x},{y}"
+            );
+        }
+        // moved, it is drawn as a whole drawing at once would, and what it left is as it was
+        annotations[0] = redaction([70, 5]);
+        layer.update_image(&mut img, &annotations, &mapping);
+        let mut at_once = original.clone();
+        AnnotationLayer::default().update_image(&mut at_once, &annotations, &mapping);
+        assert_eq!(img.as_bytes(), at_once.as_bytes(), "{color:?}");
+        // gone, it is all as it was
+        layer.update_image(&mut img, &[], &mapping);
+        assert_eq!(img.as_bytes(), original.as_bytes(), "{color:?}");
+    }
+}

@@ -1142,8 +1142,9 @@ impl eframe::App for OculanteApp {
             || state.pointer_over_ui
             || state.edit_state.block_panning
             || state.edit_state.annotate.grab;
-        // Delete would remove the file, the arrows go to another image
-        state.key_grab = ctx.egui_wants_keyboard_input() || state.edit_state.annotate.grab;
+        // A field that is typed into has the keys. The annotations take only the keys they use
+        // out of the input, see `crate::ui::annotate::canvas_ui`: the other shortcuts still work.
+        state.key_grab = ctx.egui_wants_keyboard_input();
 
         // Reset image to fit window
         if state.reset_image

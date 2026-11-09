@@ -1,5 +1,6 @@
 //! Drawing annotations onto the edited image and keeping them drawn there as they change.
 
+use image::{DynamicImage, GenericImageView};
 use rayon::prelude::*;
 
 use super::*;
@@ -124,111 +125,34 @@ pub(super) fn draw<P: Pixel<Subpixel = u8>>(
     } else {
         0
     };
-    let Some(mut layer) = Pixmap::new(area.width + 2 * margin, area.height + 2 * margin) else {
+    let (width, height) = (area.width + 2 * margin, area.height + 2 * margin);
+    let Some(mut layer) = Pixmap::new(width, height) else {
         return;
     };
     let t = t.post_translate(margin as f32 - area.x as f32, margin as f32 - area.y as f32);
-    let paint = |[r, g, b, alpha]: [u8; 4]| {
-        let mut paint = Paint::default();
-        paint.set_color_rgba8(r, g, b, alpha);
-        paint.anti_alias = true;
-        paint
-    };
-    let number_paint = paint(a.number_color);
-    // the outline first, the annotation over it
-    let outline = a.outline_width();
-    let mut passes = vec![(paint(a.color), 0.)];
-    if outline > 0. {
-        passes.insert(0, (paint(a.outline_color), outline));
-    }
-    for (paint, outline) in passes {
-        let stroke = tiny_skia::Stroke {
-            width: a.line_width() + outline * 2.,
-            line_cap: LineCap::Round,
-            line_join: LineJoin::Round,
-            ..Default::default()
+    // What it draws and its outline are each drawn opaque first, and made see-through as they
+    // are put together, the outline only shows around it, not through it, as does its shadow.
+    trace(&mut layer, a, t, false);
+    let outline = if a.outline_width() > 0. {
+        let Some(mut outline) = Pixmap::new(width, height) else {
+            return;
         };
-        match &a.shape {
-            Shape::Arrow(to) => {
-                if let Some(path) = arrow(*to, a.line_width()) {
-                    layer.stroke_path(&path, &paint, &stroke, t, None);
-                }
-            }
-            Shape::Line(to) => {
-                if let Some(line) = polyline(&[[0, 0], *to]) {
-                    layer.stroke_path(&line, &paint, &stroke, t, None);
-                }
-            }
-            Shape::Rect(size) => {
-                if let Some(frame) = frame_path(*size, a.corner_radius()) {
-                    let stroke = tiny_skia::Stroke {
-                        line_join: LineJoin::Miter,
-                        ..stroke
-                    };
-                    layer.stroke_path(&frame, &paint, &stroke, t, None);
-                }
-            }
-            Shape::Ellipse(size) => {
-                let oval = tiny_skia::Rect::from_xywh(0., 0., size[0] as f32, size[1] as f32)
-                    .and_then(PathBuilder::from_oval);
-                if let Some(oval) = oval {
-                    layer.stroke_path(&oval, &paint, &stroke, t, None);
-                }
-            }
-            Shape::Pen(points) => {
-                if let [only] = points.as_slice() {
-                    let dot =
-                        PathBuilder::from_circle(only[0] as f32, only[1] as f32, stroke.width / 2.);
-                    if let Some(dot) = dot {
-                        layer.fill_path(&dot, &paint, FillRule::Winding, t, None);
-                    }
-                } else if let Some(line) = polyline(points) {
-                    layer.stroke_path(&line, &paint, &stroke, t, None);
-                }
-            }
-            // the outline of a text is a part of it
-            Shape::Text(text) if outline == 0. => {
-                if let Some(layout) = text_layout(text, a) {
-                    resvg::render(&layout.tree, t, &mut layer.as_mut());
-                }
-            }
-            Shape::Stamp(stamp) => {
-                if let Some(glyph) = stamp_path(*stamp, a.width as f32) {
-                    // around it, under the symbol as around a text
-                    if outline > 0. {
-                        let around = tiny_skia::Stroke {
-                            width: outline * 2.,
-                            ..stroke
-                        };
-                        layer.stroke_path(&glyph, &paint, &around, t, None);
-                    } else {
-                        layer.fill_path(&glyph, &paint, FillRule::Winding, t, None);
-                    }
-                }
-            }
-            Shape::Counter(number) => {
-                let r = a.width as f32 / 2.;
-                if let Some(round) = PathBuilder::from_circle(r, r, r) {
-                    if outline > 0. {
-                        let around = tiny_skia::Stroke {
-                            width: outline * 2.,
-                            ..stroke
-                        };
-                        layer.stroke_path(&round, &paint, &around, t, None);
-                    } else {
-                        layer.fill_path(&round, &paint, FillRule::Winding, t, None);
-                        if let Some(digits) = counter_digits(*number, a.width as f32) {
-                            layer.fill_path(&digits, &number_paint, FillRule::Winding, t, None);
-                        }
-                    }
-                }
-            }
-            // spotlights dim all together, see `dim`
-            Shape::Text(_) | Shape::Redact { .. } | Shape::Spotlight { .. } => {}
-        }
+        trace(&mut outline, a, t, true);
+        Some(outline)
+    } else {
+        None
+    };
+    let covered = knock_out(&mut layer, outline.as_ref(), a.color[3], a.outline_color[3]);
+    if margin > 0 {
+        add_shadow(&mut layer, &covered, a.shadow, spread);
+    }
+    // the number of a counter goes over it in its own color
+    if let Shape::Counter(number) = &a.shape
+        && let Some(digits) = counter_digits(*number, a.width as f32)
+    {
+        layer.fill_path(&digits, &paint(a.number_color), FillRule::Winding, t, None);
     }
     if margin > 0 {
-        add_shadow(&mut layer, a.shadow, spread);
         let inside =
             tiny_skia::IntRect::from_xywh(margin as i32, margin as i32, area.width, area.height);
         match inside.and_then(|inside| layer.clone_rect(inside)) {
@@ -237,6 +161,152 @@ pub(super) fn draw<P: Pixel<Subpixel = u8>>(
         }
     }
     blend(img, &layer, area);
+}
+
+fn paint([r, g, b, alpha]: [u8; 4]) -> Paint<'static> {
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(r, g, b, alpha);
+    paint.anti_alias = true;
+    paint
+}
+
+/// Draws what an annotation covers, or with `outline` what its outline covers, in its color or
+/// the color of its outline but opaque: as far as it covers a pixel, that is its alpha. The
+/// outline covers what it is around as well. The number of a counter is not drawn.
+fn trace(layer: &mut Pixmap, a: &Annotation, t: Transform, outline: bool) {
+    let opaque = |[r, g, b, _]: [u8; 4]| paint([r, g, b, 255]);
+    let (paint, outline) = if outline {
+        (opaque(a.outline_color), a.outline_width())
+    } else {
+        (opaque(a.color), 0.)
+    };
+    let stroke = tiny_skia::Stroke {
+        width: a.line_width() + outline * 2.,
+        line_cap: LineCap::Round,
+        line_join: LineJoin::Round,
+        ..Default::default()
+    };
+    // a stamp and a counter are filled, their outline goes around them
+    let fill_or_outline = |layer: &mut Pixmap, path: &Path| {
+        if outline > 0. {
+            let around = tiny_skia::Stroke {
+                width: outline * 2.,
+                ..stroke.clone()
+            };
+            layer.stroke_path(path, &paint, &around, t, None);
+        }
+        layer.fill_path(path, &paint, FillRule::Winding, t, None);
+    };
+    match &a.shape {
+        Shape::Arrow(to) => {
+            if let Some(path) = arrow(*to, a.line_width()) {
+                layer.stroke_path(&path, &paint, &stroke, t, None);
+            }
+        }
+        Shape::Line(to) => {
+            if let Some(line) = polyline(&[[0, 0], *to]) {
+                layer.stroke_path(&line, &paint, &stroke, t, None);
+            }
+        }
+        Shape::Rect(size) => {
+            if let Some(frame) = frame_path(*size, a.corner_radius()) {
+                let stroke = tiny_skia::Stroke {
+                    line_join: LineJoin::Miter,
+                    ..stroke
+                };
+                layer.stroke_path(&frame, &paint, &stroke, t, None);
+            }
+        }
+        Shape::Ellipse(size) => {
+            let oval = tiny_skia::Rect::from_xywh(0., 0., size[0] as f32, size[1] as f32)
+                .and_then(PathBuilder::from_oval);
+            if let Some(oval) = oval {
+                layer.stroke_path(&oval, &paint, &stroke, t, None);
+            }
+        }
+        Shape::Pen(points) => {
+            if let [only] = points.as_slice() {
+                let dot =
+                    PathBuilder::from_circle(only[0] as f32, only[1] as f32, stroke.width / 2.);
+                if let Some(dot) = dot {
+                    layer.fill_path(&dot, &paint, FillRule::Winding, t, None);
+                }
+            } else if let Some(line) = polyline(points) {
+                layer.stroke_path(&line, &paint, &stroke, t, None);
+            }
+        }
+        // the letters, or the letters with their outline in the color of the outline
+        Shape::Text(text) => {
+            let opaque = |[r, g, b, _]: [u8; 4]| [r, g, b, 255];
+            let mut letters = a.clone();
+            if outline > 0. {
+                letters.color = opaque(a.outline_color);
+                letters.outline_color = opaque(a.outline_color);
+            } else {
+                letters.color = opaque(a.color);
+                letters.outline = 0;
+            }
+            if let Some(layout) = text_layout(text, &letters) {
+                resvg::render(&layout.tree, t, &mut layer.as_mut());
+            }
+        }
+        Shape::Stamp(stamp) => {
+            if let Some(glyph) = stamp_path(*stamp, a.width as f32) {
+                fill_or_outline(layer, &glyph);
+            }
+        }
+        Shape::Counter(_) => {
+            let r = a.width as f32 / 2.;
+            if let Some(round) = PathBuilder::from_circle(r, r, r) {
+                fill_or_outline(layer, &round);
+            }
+        }
+        // spotlights dim all together, see `dim`
+        Shape::Redact { .. } | Shape::Spotlight { .. } => {}
+    }
+}
+
+/// Puts an annotation drawn opaque in `layer` together with its outline, also drawn opaque, and
+/// makes them as see-through as their colors say. The outline shows only where the annotation
+/// does not cover, so it does not show through it. Returns how much of each pixel the two
+/// cover, from 0 to 1.
+fn knock_out(
+    layer: &mut Pixmap,
+    outline: Option<&Pixmap>,
+    alpha: u8,
+    outline_alpha: u8,
+) -> Vec<f32> {
+    let (alpha, outline_alpha) = (alpha as f32 / 255., outline_alpha as f32 / 255.);
+    let empty = [0u8; 4];
+    let around = outline.map(|o| o.data().as_chunks::<4>().0);
+    let mut covered = Vec::with_capacity((layer.width() * layer.height()) as usize);
+    for (i, p) in layer
+        .data_mut()
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
+        let o = around.map_or(&empty, |around| &around[i]);
+        if p[3] == 0 && o[3] == 0 {
+            covered.push(0.);
+            continue;
+        }
+        // as much as it covers of the pixel, the outline covers of the rest
+        let inside = p[3] as f32 / 255.;
+        let rest = (1. - inside) * outline_alpha;
+        let mut out = [0u8; 4];
+        for c in 0..4 {
+            out[c] = (p[c] as f32 * alpha + o[c] as f32 * rest).round().min(255.) as u8;
+        }
+        // its colors are multiplied by alpha, none is more than alpha
+        for c in 0..3 {
+            out[c] = out[c].min(out[3]);
+        }
+        *p = out;
+        covered.push(inside + (1. - inside) * o[3] as f32 / 255.);
+    }
+    covered
 }
 
 /// A frame this large, its corners rounded by `radius`
@@ -355,35 +425,32 @@ fn blend_row(dst: &mut [u8], src: &[u8], n: usize) {
     }
 }
 
-/// Adds a soft black shadow around the layer's content.
-/// The shadow is `dark` percent opaque at the edges and fades to nothing over `spread` pixels.
-fn add_shadow(layer: &mut Pixmap, dark: u32, spread: f32) {
+/// Adds a shadow around the layer's content, which covers as much of each pixel as
+/// `covered` says. The shadow is `dark` percent opaque at the edges and fades to nothing over
+/// `spread` pixels. It is below the content, so it does not show through where the content is
+/// see-through.
+fn add_shadow(layer: &mut Pixmap, covered: &[f32], dark: u32, spread: f32) {
     let (w, h) = (layer.width() as usize, layer.height() as usize);
-    let mut alpha: Vec<f32> = layer
-        .data()
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|p| p[3] as f32 / 255.)
-        .collect();
+    let mut alpha = covered.to_vec();
     // three box blurs are about a bell curve, together they reach `spread`
     let radius = ((spread / 3.).round() as usize).max(1);
     for _ in 0..3 {
         box_blur(&mut alpha, w, h, radius);
     }
     let dark = dark.min(100) as f32 / 100.;
-    for (p, blurred) in layer
+    for ((p, blurred), covered) in layer
         .data_mut()
         .as_chunks_mut::<4>()
         .0
         .iter_mut()
         .zip(alpha)
+        .zip(covered)
     {
         // half covered at an edge: as dark as it is set there
         let shade = dark * (blurred * 2.).clamp(0., 1.);
         let a = p[3] as f32 / 255.;
-        // black below what is there, its colors stay as they are multiplied by alpha
-        p[3] = ((a + shade * (1. - a)) * 255.).round() as u8;
+        // black where the content does not cover, its colors stay as they are multiplied by alpha
+        p[3] = ((a + shade * (1. - covered)) * 255.).round().min(255.) as u8;
     }
 }
 
@@ -436,11 +503,13 @@ fn spot_path(a: &Annotation) -> Option<Path> {
 }
 
 /// Dims the image except for the spotlights, using the shade of the front most one.
+/// `img` is the part of the edited image from `origin` on, `area` is in it.
 fn dim<P: Pixel<Subpixel = u8>>(
     img: &mut Pixels<P>,
     spotlights: &[&Annotation],
     mapping: &Mapping,
     area: Rect,
+    origin: (u32, u32),
 ) {
     let Some(front) = spotlights.last() else {
         return;
@@ -460,7 +529,7 @@ fn dim<P: Pixel<Subpixel = u8>>(
         if let Some(spot) = spot_path(a) {
             let t = a
                 .transform(mapping)
-                .post_translate(-(area.x as f32), -(area.y as f32));
+                .post_translate(-((origin.0 + area.x) as f32), -((origin.1 + area.y) as f32));
             layer.fill_path(&spot, &cut, FillRule::Winding, t, None);
         }
     }
@@ -533,7 +602,77 @@ impl AnnotationLayer {
         annotations: &[Annotation],
         mapping: &Mapping,
     ) -> Option<Rect> {
+        let dirty = self.changes(annotations, mapping, img.dimensions())?;
+        let kept = self.base_area.map_or(dirty, |b| rect_union(b, dirty));
+        keep_base(&mut self.base, &mut self.base_area, img, kept);
+        restore(img, &self.base, dirty);
+        self.paint(img, mapping, dirty, (0, 0));
+        Some(dirty)
+    }
+
+    /// As `update`, on an image in any layout. One that is not 8 bit RGB or RGBA, made so by a
+    /// color type operation, is drawn on in 8 bit RGBA where it changed, and only the pixels
+    /// the annotations change are put back into it, in its own layout.
+    pub fn update_image(
+        &mut self,
+        img: &mut DynamicImage,
+        annotations: &[Annotation],
+        mapping: &Mapping,
+    ) -> Option<Rect> {
+        match img {
+            DynamicImage::ImageRgb8(pixels) => return self.update(pixels, annotations, mapping),
+            DynamicImage::ImageRgba8(pixels) => return self.update(pixels, annotations, mapping),
+            _ => {}
+        }
         let size = img.dimensions();
+        let dirty = self.changes(annotations, mapping, size)?;
+        let n = img.color().bytes_per_pixel() as usize;
+        let kept = self.base_area.map_or(dirty, |b| rect_union(b, dirty));
+        keep_base_bytes(
+            &mut self.base,
+            &mut self.base_area,
+            img.as_bytes(),
+            size,
+            n,
+            kept,
+        );
+        restore_bytes(bytes_mut(img)?, size.0, n, &self.base, dirty);
+        let before = img
+            .crop_imm(dirty.x, dirty.y, dirty.width, dirty.height)
+            .to_rgba8();
+        let mut work = before.clone();
+        self.paint(&mut work, mapping, dirty, (dirty.x, dirty.y));
+        // what is not drawn on keeps all of its depth
+        let changed: Vec<bool> = before
+            .pixels()
+            .zip(work.pixels())
+            .map(|(was, is)| was != is)
+            .collect();
+        let mut drawn = DynamicImage::ImageRgba8(work);
+        let color = img.color();
+        convert_color_type(&mut drawn, &ColorTypeExt::from_image(color));
+        if drawn.color() != color {
+            return Some(dirty);
+        }
+        let drawn = drawn.as_bytes();
+        let (width, stride) = (dirty.width as usize, size.0 as usize * n);
+        let out = bytes_mut(img)?;
+        for (i, _) in changed.iter().enumerate().filter(|(_, changed)| **changed) {
+            let (x, y) = (dirty.x as usize + i % width, dirty.y as usize + i / width);
+            let at = y * stride + x * n;
+            out[at..at + n].copy_from_slice(&drawn[i * n..(i + 1) * n]);
+        }
+        Some(dirty)
+    }
+
+    /// Which annotations changed since they were last drawn, and the part of the image to draw
+    /// again for them, none if nothing changed. Remembers them as they are now.
+    fn changes(
+        &mut self,
+        annotations: &[Annotation],
+        mapping: &Mapping,
+        size: (u32, u32),
+    ) -> Option<Rect> {
         let fonts = FONTS_VERSION.load(Ordering::Relaxed);
         // with other fonts, or on an image of another size, all is drawn again. Edits that change
         // the image under the annotations reset the layer.
@@ -575,15 +714,14 @@ impl AnnotationLayer {
         }
         self.fonts = fonts;
         self.size = size;
-        let Some(mut dirty) = dirty else {
-            self.drawn = now;
-            return None;
-        };
+        self.drawn = now;
+        let mut dirty = dirty?;
         // Anything drawn again is drawn in full, since a redaction needs all of its blocks.
         // The spotlight shade covers the whole image, so it is drawn only where needed.
         loop {
             let mut grown = false;
-            for area in now
+            for area in self
+                .drawn
                 .iter()
                 .filter(|d| !d.a.is_spotlight())
                 .filter_map(|d| d.area)
@@ -597,28 +735,61 @@ impl AnnotationLayer {
                 break;
             }
         }
-        let kept = self.base_area.map_or(dirty, |b| rect_union(b, dirty));
-        keep_base(&mut self.base, &mut self.base_area, img, kept);
-        restore(img, &self.base, dirty);
-        let spotlights: Vec<&Annotation> = now
+        Some(dirty)
+    }
+
+    /// Draws the annotations where `dirty` is in the edited image, onto `img`: the part of it
+    /// from `origin` on, with what is under the annotations there
+    fn paint<P: Pixel<Subpixel = u8>>(
+        &self,
+        img: &mut Pixels<P>,
+        mapping: &Mapping,
+        dirty: Rect,
+        origin: (u32, u32),
+    ) {
+        let (x, y) = (origin.0 as f32, origin.1 as f32);
+        let shift = |area: Rect| Rect {
+            x: area.x - origin.0,
+            y: area.y - origin.1,
+            ..area
+        };
+        let spotlights: Vec<&Annotation> = self
+            .drawn
             .iter()
             .filter(|d| d.a.is_spotlight() && d.area.is_some())
             .map(|d| &d.a)
             .collect();
         let mut dimmed = false;
-        for Drawn { a, area, .. } in &now {
+        for Drawn { a, area, .. } in &self.drawn {
             if a.is_spotlight() {
                 // where the one furthest back is
                 if area.is_some() && !std::mem::replace(&mut dimmed, true) {
-                    dim(img, &spotlights, mapping, dirty);
+                    dim(img, &spotlights, mapping, shift(dirty), origin);
                 }
             } else if let Some(area) = area.filter(|area| overlap(*area, dirty)) {
-                draw(img, a, a.transform(mapping), area);
+                let t = a.transform(mapping).post_translate(-x, -y);
+                draw(img, a, t, shift(area));
             }
         }
-        self.drawn = now;
-        Some(dirty)
     }
+}
+
+/// The bytes of an image in any layout
+fn bytes_mut(img: &mut DynamicImage) -> Option<&mut [u8]> {
+    use DynamicImage::*;
+    Some(match img {
+        ImageLuma8(p) => p.as_mut(),
+        ImageLumaA8(p) => p.as_mut(),
+        ImageRgb8(p) => p.as_mut(),
+        ImageRgba8(p) => p.as_mut(),
+        ImageLuma16(p) => bytemuck::cast_slice_mut(p.as_mut()),
+        ImageLumaA16(p) => bytemuck::cast_slice_mut(p.as_mut()),
+        ImageRgb16(p) => bytemuck::cast_slice_mut(p.as_mut()),
+        ImageRgba16(p) => bytemuck::cast_slice_mut(p.as_mut()),
+        ImageRgb32F(p) => bytemuck::cast_slice_mut(p.as_mut()),
+        ImageRgba32F(p) => bytemuck::cast_slice_mut(p.as_mut()),
+        _ => return None,
+    })
 }
 
 fn overlap(a: Rect, b: Rect) -> bool {

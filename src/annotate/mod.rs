@@ -25,8 +25,10 @@ use imageproc::geometric_transformations::Projection;
 use serde::{Deserialize, Serialize};
 use tiny_skia::{FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Point, Transform};
 
-use crate::image_editing::{ImageOperation, ImgOpItem, cropped_range, perspective};
-use crate::paint::{Base, Pixels, channels, keep_base, restore};
+use crate::image_editing::{
+    ColorTypeExt, ImageOperation, ImgOpItem, convert_color_type, cropped_range, perspective,
+};
+use crate::paint::{Base, Pixels, channels, keep_base, keep_base_bytes, restore, restore_bytes};
 use crate::utils::rect_union;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize)]

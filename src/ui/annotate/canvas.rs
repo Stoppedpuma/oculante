@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use super::*;
 
 /// Drawing, selecting and moving annotations with the mouse, and the keys for them, unless a
-/// window is open over the image. Returns whether the image should be copied.
+/// window is open over the image. Actively used keys are seperated from regular shortcuts while annotating
 pub fn canvas_ui(
     ctx: &egui::Context,
     annotations: &mut Vec<Annotation>,
@@ -14,7 +14,7 @@ pub fn canvas_ui(
     geo: &ImageGeometry,
     pointer_over_ui: bool,
     window_open: bool,
-) -> bool {
+) {
     // a field that has the keys keeps them, as a window open over the image does: Backspace in
     // the file manager does not remove what is selected
     let keys_free = !window_open && !ctx.egui_wants_keyboard_input();
@@ -29,11 +29,13 @@ pub fn canvas_ui(
         state.hovered = None;
         state.menu = None;
         state.overlay.clear();
-        return false;
+        return;
     };
     state.grab = true;
     let typed = text_ui(ctx, annotations, state, mapping, geo);
-    let copy = keys_free && state.typing.is_none() && keys(ctx, annotations, state, mapping, tool);
+    if keys_free && state.typing.is_none() {
+        keys(ctx, annotations, state, mapping, tool);
+    }
 
     let canvas = Canvas::new(ctx, mapping, geo, tool, pointer_over_ui);
     let selection = lay_out_selection(&canvas, annotations, state);
@@ -88,7 +90,6 @@ pub fn canvas_ui(
     }
     show_tooltip(&canvas, state, dragged.angle);
     state.overlay = canvas.shapes.take();
-    copy
 }
 
 /// The selection's box at the start of the frame, and what the mouse is over.
@@ -320,10 +321,11 @@ fn undo_and_redo(
     if state.tool.is_none() || busy || !keys_free {
         return;
     }
-    let (undo, redo) = ctx.input(|i| {
-        let z = i.modifiers.command && i.key_pressed(Key::Z);
-        let y = i.modifiers.command && i.key_pressed(Key::Y);
-        (z && !i.modifiers.shift, (z && i.modifiers.shift) || y)
+    let (undo, redo) = ctx.input_mut(|i| {
+        let shift = i.modifiers.shift;
+        let z = take_key(i, Key::Z, |m| m.command);
+        let y = take_key(i, Key::Y, |m| m.command);
+        (z && !shift, (z && shift) || y)
     });
     if (undo || redo) && state.history.step(annotations, undo) {
         state.selected.retain(|i| *i < annotations.len());
@@ -333,41 +335,83 @@ fn undo_and_redo(
     }
 }
 
+/// Receives matching input presses of `key` so that the shortcuts don't use them.
+pub(super) fn take_key(
+    input: &mut egui::InputState,
+    key: Key,
+    with: impl Fn(&egui::Modifiers) -> bool,
+) -> bool {
+    let mut taken = false;
+    input.events.retain(|event| {
+        let take = matches!(
+            event,
+            egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && with(modifiers)
+        );
+        taken |= take;
+        !take
+    });
+    taken
+}
+
 /// Delete removes what is selected, Esc closes the menu, stops a drag, lets go of what is
 /// selected and then of the tool, Ctrl+A (Cmd+A on a Mac) selects everything shown, the arrows
-/// move what is selected. Returns whether the image should be copied.
+/// move what is selected. Only what is shown is acted on, hidden annotations stay as they are.
+
+/// These keys are taken from the input, so they do interfere with the regular shortcuts.
+/// The arrows only while something is selected or dragged, otherwise they go to the next image as
+/// usual. Delete is always taken so that a press meant for an annotation never prompts to delete the file. All other
+/// keys, Ctrl+C (Cmd+C) to copy the image among them, are left untouched by annotations
 fn keys(
     ctx: &egui::Context,
     annotations: &mut Vec<Annotation>,
     state: &mut AnnotateUi,
     mapping: &Mapping,
     tool: Tool,
-) -> bool {
+) {
     let original = mapping.original;
-    let (delete, mut escape, shift, select_all) = ctx.input(|i| {
-        (
-            i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
-            // that only closes a list
-            i.key_pressed(Key::Escape) && !std::mem::take(&mut state.popup_open),
-            i.modifiers.shift,
-            i.modifiers.command && i.key_pressed(Key::A),
-        )
+    let shown = state.shown(annotations);
+    let arrows_used = !shown.is_empty() || state.drag.is_some();
+    let (delete, mut escape, select_all, nudge) = ctx.input_mut(|i| {
+        let shift = i.modifiers.shift;
+        let delete = take_key(i, Key::Delete, |_| true) | take_key(i, Key::Backspace, |_| true);
+        let escape = take_key(i, Key::Escape, |_| true);
+        let select_all = take_key(i, Key::A, |m| m.command);
+        let step = if shift { 10. } else { 1. };
+        let mut nudge = [0., 0.];
+        if arrows_used {
+            for (key, by) in [
+                (Key::ArrowLeft, [-step, 0.]),
+                (Key::ArrowRight, [step, 0.]),
+                (Key::ArrowUp, [0., -step]),
+                (Key::ArrowDown, [0., step]),
+            ] {
+                // with Shift they move further, other modifiers are for the app
+                if take_key(i, key, |m| !m.command && !m.ctrl && !m.alt) {
+                    nudge = [nudge[0] + by[0], nudge[1] + by[1]];
+                }
+            }
+        }
+        (delete, escape, select_all, nudge)
     });
-    let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+    // that only closes a list
+    if escape && std::mem::take(&mut state.popup_open) {
+        escape = false;
+    }
     // that only closes the menu, what is selected stays
     if escape && state.menu.take().is_some() {
         escape = false;
     }
-    if delete && !state.selected.is_empty() {
-        let selected = state.selected.clone();
-        state.remove(annotations, selected);
+    if delete && !shown.is_empty() {
+        state.remove(annotations, shown.clone());
     }
     if escape {
         match state.drag.take() {
             // a drag stops, what it changed is as it was
             Some(Drag::Move { starts, .. }) => {
-                for (i, start) in state.selected.iter().zip(starts) {
-                    annotations[*i].set_start(start, original);
+                for (i, start) in starts {
+                    if let Some(a) = annotations.get_mut(i) {
+                        a.set_start(start, original);
+                    }
                 }
             }
             Some(Drag::Resize { before, .. } | Drag::Rotate { before, .. }) => {
@@ -391,20 +435,8 @@ fn keys(
     if select_all && state.drag.is_none() {
         state.select_all(annotations);
     }
-    let step = if shift { 10. } else { 1. };
-    let nudge = ctx.input(|i| {
-        [
-            (Key::ArrowLeft, [-step, 0.]),
-            (Key::ArrowRight, [step, 0.]),
-            (Key::ArrowUp, [0., -step]),
-            (Key::ArrowDown, [0., step]),
-        ]
-        .into_iter()
-        .filter(|(key, _)| i.key_pressed(*key))
-        .fold([0., 0.], |d, (_, by)| [d[0] + by[0], d[1] + by[1]])
-    });
     if nudge != [0., 0.] {
-        for &i in &state.selected {
+        for i in state.shown(annotations) {
             let a = &mut annotations[i];
             let start = a.start(original);
             let from = [start[0] as f32, start[1] as f32];
@@ -427,7 +459,6 @@ fn keys(
             a.reanchor(original);
         }
     }
-    copy
 }
 
 /// The box around what is selected as the frame begins: which corner shows the button to turn,
@@ -475,9 +506,9 @@ fn start_move(
     state.drag = Some(Drag::Move {
         from: o,
         starts: state
-            .selected
-            .iter()
-            .map(|i| annotations[*i].start(original))
+            .shown(annotations)
+            .into_iter()
+            .map(|i| (i, annotations[i].start(original)))
             .collect(),
     });
 }
@@ -701,8 +732,10 @@ fn drag(
         }
         Some(Drag::Move { from, starts }) => {
             let d = round([o[0] - from[0], o[1] - from[1]]);
-            for (i, start) in state.selected.iter().zip(starts) {
-                annotations[*i].set_start([start[0] + d[0], start[1] + d[1]], original);
+            for (i, start) in starts {
+                if let Some(a) = annotations.get_mut(*i) {
+                    a.set_start([start[0] + d[0], start[1] + d[1]], original);
+                }
             }
         }
         Some(Drag::Select { from, before }) => {
@@ -840,9 +873,11 @@ fn release(
                 }
             }
         }
-        Drag::Move { .. } => {
-            for &i in &state.selected {
-                annotations[i].reanchor(original);
+        Drag::Move { starts, .. } => {
+            for (i, _) in starts {
+                if let Some(a) = annotations.get_mut(i) {
+                    a.reanchor(original);
+                }
             }
         }
         Drag::Resize { before, .. } | Drag::Rotate { before, .. } => {

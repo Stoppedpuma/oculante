@@ -2298,7 +2298,7 @@ pub fn process_pixels(dynimage: &mut DynamicImage, operators: &Vec<ImageOperatio
 }
 
 /// Converts the image to another color type
-fn convert_color_type(image: &mut DynamicImage, t: &ColorTypeExt) {
+pub(crate) fn convert_color_type(image: &mut DynamicImage, t: &ColorTypeExt) {
     match t {
         ColorTypeExt::L8 => {
             *image = DynamicImage::ImageLuma8(image.to_luma8());
@@ -2335,7 +2335,8 @@ fn convert_color_type(image: &mut DynamicImage, t: &ColorTypeExt) {
 
 /// Runs `$body` with `$pixels` the pixels of the edited image, if it is in one of
 /// the layouts the edits work in: 8 bit RGB or RGBA. An image in another one, made
-/// with a color type operation, is not painted or annotated.
+/// with a color type operation, is not painted. Annotations are drawn into every
+/// layout, see `AnnotationLayer::update_image`.
 macro_rules! with_pixels {
     ($image:expr, |$pixels:ident| $body:expr) => {
         match $image {
@@ -2596,7 +2597,7 @@ pub enum ColorTypeExt {
 }
 
 impl ColorTypeExt {
-    pub fn _from_image(ct: ColorType) -> Self {
+    pub fn from_image(ct: ColorType) -> Self {
         match ct {
             ColorType::L8 => ColorTypeExt::L8,
             ColorType::La8 => ColorTypeExt::La8,

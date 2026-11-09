@@ -341,3 +341,129 @@ fn every_annotation_can_cast_a_shadow_off_at_first() {
         assert_eq!(a.casts_shadow(), !none, "{tool:?}");
     }
 }
+
+/// One frame of the canvas with these keys pressed. Returns which of them are still in the
+/// input after it, as the shortcuts of the app read it.
+fn canvas_frame(
+    ctx: &egui::Context,
+    list: &mut Vec<Annotation>,
+    state: &mut AnnotateUi,
+    keys: &[(Key, egui::Modifiers)],
+) -> Vec<Key> {
+    let mapping = Mapping::new(&[], (200, 200));
+    let geo = ImageGeometry {
+        scale: 1.,
+        offset: nalgebra::Vector2::new(0., 0.),
+        dimensions: (200, 200),
+    };
+    let mut input = egui::RawInput::default();
+    // held from the first press, let go of before the next frame
+    let held = keys.first().map_or(NONE, |(_, m)| *m);
+    input.events.push(egui::Event::ModifiersChanged(held));
+    for (key, modifiers) in keys {
+        input.events.push(egui::Event::Key {
+            key: *key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: *modifiers,
+        });
+    }
+    let mut left = vec![];
+    let mut output = ctx.run_ui(input, |ui| {
+        canvas_ui(ui.ctx(), list, state, &mapping, &geo, true, false);
+        left = keys
+            .iter()
+            .map(|(key, _)| *key)
+            .filter(|key| ui.input(|i| i.key_pressed(*key)))
+            .collect();
+    });
+    output.textures_delta.clear();
+    left
+}
+
+const NONE: egui::Modifiers = egui::Modifiers::NONE;
+
+/// A hidden one stays selected on its card, but Delete and the arrows leave it as it is: nothing
+/// on the image shows it is selected. It was removed or moved where it could not be seen.
+#[test]
+fn hidden_ones_are_not_deleted_or_moved_by_the_keys() {
+    let ctx = egui::Context::default();
+    let mut hidden = arrow_at([10, 10], [50, 0]);
+    hidden.hidden = true;
+    let shown = arrow_at([10, 50], [50, 0]);
+    let mut list = vec![hidden.clone(), shown.clone()];
+    let mut state = AnnotateUi {
+        tool: Some(Tool::Select),
+        selected: vec![0],
+        ..Default::default()
+    };
+    // with only a hidden one selected the arrows are the app's
+    let left = canvas_frame(&ctx, &mut list, &mut state, &[(Key::ArrowRight, NONE)]);
+    assert_eq!(list[0], hidden, "not moved");
+    assert_eq!(left, vec![Key::ArrowRight], "to the next image");
+    canvas_frame(&ctx, &mut list, &mut state, &[(Key::Delete, NONE)]);
+    assert_eq!(list, vec![hidden.clone(), shown.clone()], "not removed");
+    // with a shown one selected as well, that one moves and is removed
+    state.selected = vec![0, 1];
+    let left = canvas_frame(&ctx, &mut list, &mut state, &[(Key::ArrowRight, NONE)]);
+    assert!(left.is_empty(), "the arrow moves what is selected only");
+    assert_eq!(list[0], hidden);
+    assert_eq!(list[1].start((200, 200)), [11, 50]);
+    canvas_frame(&ctx, &mut list, &mut state, &[(Key::Backspace, NONE)]);
+    assert_eq!(list, vec![hidden]);
+}
+
+/// While a tool is picked the annotations take only their keys: the other shortcuts of the app
+/// work. All keys were taken.
+#[test]
+fn the_annotations_take_only_their_keys() {
+    let ctx = egui::Context::default();
+    let mut list = vec![arrow_at([10, 50], [50, 0])];
+    let mut state = AnnotateUi {
+        tool: Some(Tool::Arrow),
+        ..Default::default()
+    };
+    let command = egui::Modifiers::COMMAND;
+    // the app's: zoom, fullscreen, info, the next image while nothing is selected
+    for key in [
+        Key::Num1,
+        Key::F,
+        Key::I,
+        Key::ArrowRight,
+        Key::ArrowLeft,
+        Key::Equals,
+    ] {
+        let left = canvas_frame(&ctx, &mut list, &mut state, &[(key, NONE)]);
+        assert_eq!(left, vec![key], "{key:?} reaches the app");
+    }
+    for key in [Key::O, Key::V] {
+        let left = canvas_frame(&ctx, &mut list, &mut state, &[(key, command)]);
+        assert_eq!(left, vec![key], "Ctrl+{key:?} reaches the app");
+    }
+    // theirs: Delete never deletes the file, undo, select all
+    for (key, modifiers) in [(Key::Delete, NONE), (Key::Z, command), (Key::A, command)] {
+        let left = canvas_frame(&ctx, &mut list, &mut state, &[(key, modifiers)]);
+        assert!(left.is_empty(), "{key:?} is taken");
+    }
+    // Ctrl+A selected the arrow: now the arrows move it, with Shift further
+    assert_eq!(state.selected, vec![0]);
+    let left = canvas_frame(
+        &ctx,
+        &mut list,
+        &mut state,
+        &[(Key::ArrowDown, egui::Modifiers::SHIFT)],
+    );
+    assert!(left.is_empty());
+    assert_eq!(list[0].start((200, 200)), [10, 60]);
+    // Esc lets go of it, then of the tool
+    assert!(canvas_frame(&ctx, &mut list, &mut state, &[(Key::Escape, NONE)]).is_empty());
+    assert!(state.selected.is_empty());
+    canvas_frame(&ctx, &mut list, &mut state, &[(Key::Escape, NONE)]);
+    assert_eq!(state.tool, Some(Tool::Select));
+    // without a tool nothing is taken
+    state.tool = None;
+    let left = canvas_frame(&ctx, &mut list, &mut state, &[(Key::Delete, NONE)]);
+    assert_eq!(left, vec![Key::Delete]);
+    assert_eq!(list.len(), 1);
+}

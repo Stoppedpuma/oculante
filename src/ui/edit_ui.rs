@@ -577,22 +577,16 @@ pub fn edit_ui(ui: &mut egui::Ui, state: &mut OculanteState) {
             // Escape to close the file manager does not deselect what is selected
             let window_open = state.window_was_open || crate::ui::window_open(ctx, state);
             match crate::annotate::annotations_mut(&mut state.edit_state.image_op_stack) {
-                Some(annotations) => {
-                    let copy = crate::ui::annotate::canvas_ui(
-                        ctx,
-                        annotations,
-                        &mut state.edit_state.annotate,
-                        &mapping,
-                        &state.image_geometry,
-                        state.pointer_over_ui,
-                        window_open,
-                    );
-                    // the keys go to the annotations, copying the image works still
-                    if copy && let Some(img) = effective_image(state) {
-                        clipboard_copy(img);
-                        state.send_message_info("Image copied");
-                    }
-                }
+                // the keys the annotations use are taken, the others go to the shortcuts
+                Some(annotations) => crate::ui::annotate::canvas_ui(
+                    ctx,
+                    annotations,
+                    &mut state.edit_state.annotate,
+                    &mapping,
+                    &state.image_geometry,
+                    state.pointer_over_ui,
+                    window_open,
+                ),
                 None => state.edit_state.annotate.stop(),
             }
             let annotations = crate::ui::annotate::visible(&state.edit_state.image_op_stack, &state.edit_state.annotate);
@@ -717,11 +711,9 @@ pub fn edit_ui(ui: &mut egui::Ui, state: &mut OculanteState) {
                     });
                 }
 
-                // the annotations on top of everything
+                // the annotations on top of everything, in every layout
                 state.edit_state.annotate.layer.reset();
-                with_pixels!(&mut state.edit_state.result_pixel_op, |buffer| {
-                    state.edit_state.annotate.layer.update(buffer, &annotations, &mapping)
-                });
+                state.edit_state.annotate.layer.update_image(&mut state.edit_state.result_pixel_op, &annotations, &mapping);
 
                 state.send_frame(crate::utils::Frame::UpdateTexture);
                 debug!(
@@ -740,9 +732,7 @@ pub fn edit_ui(ui: &mut egui::Ui, state: &mut OculanteState) {
 
             // only what changed of the annotations
             if !pixels_changed
-                && let Some(area) = with_pixels!(&mut state.edit_state.result_pixel_op, |buffer| {
-                    state.edit_state.annotate.layer.update(buffer, &annotations, &mapping)
-                }).flatten()
+                && let Some(area) = state.edit_state.annotate.layer.update_image(&mut state.edit_state.result_pixel_op, &annotations, &mapping)
             {
                 state.send_frame(crate::utils::Frame::UpdateTextureArea(area));
             }

@@ -60,9 +60,10 @@ enum Drag {
         index: usize,
         from: [f32; 2],
     },
+    /// What is moved, the shown ones of what is selected, with where each started
     Move {
         from: [f32; 2],
-        starts: Vec<[i32; 2]>,
+        starts: Vec<(usize, [i32; 2])>,
     },
     Select {
         from: [f32; 2],
@@ -161,6 +162,16 @@ impl AnnotateUi {
         self.selected = (0..annotations.len())
             .filter(|&i| !annotations[i].hidden)
             .collect();
+    }
+
+    /// What is selected and shown. What the keys, dragging, and the menu act on. A hidden annotation
+    /// stays selected on its card, it can be motified from the card still, but nothing on the image shows it.
+    fn shown(&self, annotations: &[Annotation]) -> Vec<usize> {
+        self.selected
+            .iter()
+            .copied()
+            .filter(|i| annotations.get(*i).is_some_and(|a| !a.hidden))
+            .collect()
     }
 
     fn start_typing(&mut self, index: usize) {
