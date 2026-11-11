@@ -23,19 +23,20 @@ use typing::text_ui;
 use std::ops::RangeInclusive;
 
 use egui::{Color32, CursorIcon, Id, Key, Pos2, Stroke, Ui, pos2};
-use tiny_skia::Point;
+use tiny_skia::{Point, Transform};
 
 use crate::appstate::ImageGeometry;
 use crate::image_editing::{ImageOperation, ImgOpItem, canvas_rect};
 use crate::ui::{
-    BLACK, BUTTON, CARD, OVER_IMAGE_EDGE, Opacity, PANEL, RED, TEXT, TRANSPARENT, ToColor32, WHITE,
-    YELLOW, accent_color, fade, opacity, selection_colors, state_color,
+    BLACK, BUTTON, CARD, OVER_IMAGE_EDGE, Opacity, PANEL, RED, TEXT, TRANSPARENT, WHITE, YELLOW,
+    accent_color, fade, opacity, selection_colors, state_color,
 };
 
 use crate::annotate::*;
 
-/// The annotations drawn onto the image. Text still being typed is excluded since the text box shows it.
-pub fn visible(stack: &[ImgOpItem], state: &AnnotateUi) -> Vec<Annotation> {
+/// The annotations drawn onto the image. Text being typed is included, since the image is
+/// where you see it.
+pub fn visible(stack: &[ImgOpItem]) -> Vec<Annotation> {
     stack
         .iter()
         .filter(|op| op.active)
@@ -43,14 +44,7 @@ pub fn visible(stack: &[ImgOpItem], state: &AnnotateUi) -> Vec<Annotation> {
             ImageOperation::Annotate(annotations) => Some(annotations),
             _ => None,
         })
-        .map(|annotations| {
-            annotations
-                .iter()
-                .enumerate()
-                .filter(|(i, a)| state.typing != Some(*i) && !a.hidden)
-                .map(|(_, a)| a.clone())
-                .collect()
-        })
+        .map(|annotations| annotations.iter().filter(|a| !a.hidden).cloned().collect())
         .unwrap_or_default()
 }
 
@@ -108,6 +102,10 @@ pub struct AnnotateUi {
     typing: Option<usize>,
     /// The text box takes keyboard input.
     focus_text: bool,
+    /// Where a click on the text being typed put the caret, a drag selects from there
+    text_drag: Option<usize>,
+    /// The mouse is over the text being typed
+    over_text: bool,
     /// The image's size as loaded.
     original: (u32, u32),
     /// The annotations as they appear in the edited image.
@@ -176,6 +174,7 @@ impl AnnotateUi {
 
     fn start_typing(&mut self, index: usize) {
         self.typing = Some(index);
+        self.text_drag = None;
         self.focus_text = true;
         self.selected = vec![index];
         self.drag = None;

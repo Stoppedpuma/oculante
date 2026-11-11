@@ -32,12 +32,13 @@ pub fn canvas_ui(
         return;
     };
     state.grab = true;
-    let typed = text_ui(ctx, annotations, state, mapping, geo);
+    let (typed, text_shapes) = text_ui(ctx, annotations, state, mapping, geo, pointer_over_ui);
     if keys_free && state.typing.is_none() {
         keys(ctx, annotations, state, mapping, tool);
     }
 
     let canvas = Canvas::new(ctx, mapping, geo, tool, pointer_over_ui);
+    canvas.shapes.borrow_mut().extend(text_shapes);
     let selection = lay_out_selection(&canvas, annotations, state);
     let mut dragged = Dragged::default();
     if let Some(mouse) = canvas.mouse {
@@ -526,6 +527,10 @@ fn press(
     let (pos, p) = (mouse.screen, mouse.image);
     let (tool, mapping, original) = (canvas.tool, canvas.mapping, canvas.mapping.original);
     let o = mapping.to_original(p);
+    // the click was on the text being typed
+    if state.typing.is_some() && state.text_drag.is_some() {
+        return;
+    }
     if state.typing.is_some() || typed {
         // the click only ends the typing
         state.finish_typing(annotations);
@@ -674,14 +679,14 @@ fn drag(
     match &state.drag {
         Some(Drag::Draw { index, from }) => {
             if let Some(a) = annotations.get_mut(*index) {
-                // with Shift a line or an arrow goes in steps as it is shown, also on an
-                // image that was turned or stretched
-                let o = if canvas.shift && matches!(a.shape, Shape::Arrow(_) | Shape::Line(_)) {
-                    mapping.to_original(snap_angle(mapping.to_result(*from), p))
-                } else {
-                    o
-                };
-                let mut d = [o[0] - from[0], o[1] - from[1]];
+                // Work in the edited image, so Shift gives a square, a circle or 15° steps as they
+                // look, even on a stretched or turned image
+                let start = mapping.to_result(*from);
+                let mut d = [p[0] - start[0], p[1] - start[1]];
+                if canvas.shift && matches!(a.shape, Shape::Arrow(_) | Shape::Line(_)) {
+                    let snapped = snap_angle(start, p);
+                    d = [snapped[0] - start[0], snapped[1] - start[1]];
+                }
                 let squared = matches!(
                     a.shape,
                     Shape::Rect(_) | Shape::Ellipse(_) | Shape::Spotlight { .. }
@@ -691,6 +696,8 @@ fn drag(
                     let side = d[0].abs().max(d[1].abs());
                     d = [side.copysign(d[0]), side.copysign(d[1])];
                 }
+                let o = mapping.to_original([start[0] + d[0], start[1] + d[1]]);
+                let d = [o[0] - from[0], o[1] - from[1]];
                 let corner = [from[0] + d[0].min(0.), from[1] + d[1].min(0.)];
                 let size = round([d[0].abs(), d[1].abs()]);
                 match &mut a.shape {
@@ -711,7 +718,8 @@ fn drag(
                     // a square from where the drag started, a click places one as large as
                     // the last
                     Shape::Stamp(_) | Shape::Counter(_) => {
-                        let side = d[0].abs().max(d[1].abs());
+                        let shown = [p[0] - start[0], p[1] - start[1]];
+                        let side = shown[0].abs().max(shown[1].abs());
                         let centre = if side * canvas.geo.scale < 4. {
                             a.width = if matches!(a.shape, Shape::Counter(_)) {
                                 state.style.counter_size
@@ -720,9 +728,12 @@ fn drag(
                             };
                             *from
                         } else {
-                            a.width = side.round() as u32;
+                            // stored unscaled, the image scales it
+                            let scale = scale_of(mapping.linear()).max(1e-6);
+                            a.width = (side / scale).round() as u32;
                             let half = |d: f32| (side / 2.).copysign(d);
-                            [from[0] + half(d[0]), from[1] + half(d[1])]
+                            mapping
+                                .to_original([start[0] + half(shown[0]), start[1] + half(shown[1])])
                         };
                         a.centre_at(centre, original);
                     }
@@ -823,6 +834,10 @@ fn point(
     };
     if let Some(cursor) = box_cursor {
         canvas.ctx.set_cursor_icon(cursor);
+        return;
+    }
+    if state.typing.is_some() && (state.over_text || state.text_drag.is_some()) {
+        canvas.ctx.set_cursor_icon(CursorIcon::Text);
         return;
     }
     if canvas.pointer_over_ui {

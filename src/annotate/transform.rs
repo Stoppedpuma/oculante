@@ -34,7 +34,7 @@ pub(crate) fn selection_bounds(
         .filter(|a| !a.hidden)
     {
         let t = a.transform(mapping);
-        if let (Some(s), Some(d)) = (extent(a, t, 0.), extent(a, t, a.reach())) {
+        if let (Some(s), Some(d)) = (extent(a, t, 0.), drawn_extent(a, t)) {
             shape = around(shape, s);
             drawn = around(drawn, d);
         }
@@ -271,26 +271,18 @@ fn with_ends_moved(
     let (Shape::Arrow(to) | Shape::Line(to)) = a.shape else {
         return None;
     };
+    let t = a.transform(mapping);
     let mut ends = [Point::zero(), Point::from_xy(to[0] as f32, to[1] as f32)];
-    a.transform(mapping).map_points(&mut ends);
-    let [start, end] = ends.map(|p| mapping.to_original(place([p.x, p.y])));
-    // back into its own coordinates: turned back, then flipped back
-    let (dx, dy) = (end[0] - start[0], end[1] - start[1]);
-    let (sin, cos) = (-(a.rotation as f32)).to_radians().sin_cos();
-    let mut own = [dx * cos - dy * sin, dx * sin + dy * cos];
-    for (axis, flipped) in a.flip.iter().enumerate() {
-        if *flipped {
-            own[axis] = -own[axis];
-        }
-    }
+    t.map_points(&mut ends);
+    let [start, end] = ends.map(|p| place([p.x, p.y]));
+    let back = Transform::from_row(t.sx, t.ky, t.kx, t.sy, 0., 0.).invert()?;
+    let mut own = Point::from_xy(end[0] - start[0], end[1] - start[1]);
+    back.map_point(&mut own);
     let mut a = a.clone();
-    a.set_start(
-        [start[0].round() as i32, start[1].round() as i32],
-        mapping.original,
-    );
     if let Shape::Arrow(to) | Shape::Line(to) = &mut a.shape {
-        *to = [own[0].round() as i32, own[1].round() as i32];
+        *to = [own.x.round() as i32, own.y.round() as i32];
     }
+    a.start_at(start, mapping);
     Some(a)
 }
 

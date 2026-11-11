@@ -282,12 +282,76 @@ impl Annotation {
             .pre_scale(flip(self.flip[0]), flip(self.flip[1]))
     }
 
-    /// From its own coordinates to the edited image
+    /// From its own coordinates to the edited image.
+    ///
+    /// It's turned after the image is stretched, so a turned frame stays a rectangle. Text, stamps
+    /// and counters aren't stretched at all, only moved, turned and scaled evenly.
     pub fn transform(&self, mapping: &Mapping) -> Transform {
-        let centre = self.bounds().map_or(Point::zero(), |b| {
+        let centre = self.middle();
+        let mut middle = centre;
+        mapping
+            .transform(self.placement(mapping.original), centre)
+            .map_point(&mut middle);
+        let linear = self.linear(mapping);
+        let mut moved = centre;
+        linear.map_point(&mut moved);
+        let t = linear.post_translate(middle.x - moved.x, middle.y - moved.y);
+        if self.keeps_its_shape() {
+            undistorted(t, centre)
+        } else {
+            t
+        }
+    }
+
+    fn middle(&self) -> Point {
+        self.bounds().map_or(Point::zero(), |b| {
             Point::from_xy((b[0] + b[2]) / 2., (b[1] + b[3]) / 2.)
-        });
-        mapping.transform(self.placement(mapping.original), centre)
+        })
+    }
+
+    /// Its flip, the image's edits and its turn, without moving it. A mirrored image turns it the
+    /// other way.
+    fn linear(&self, mapping: &Mapping) -> Transform {
+        let image = mapping.linear();
+        let turn = if mirrors(image) {
+            -self.rotation
+        } else {
+            self.rotation
+        };
+        let flip = |flipped: bool| if flipped { -1. } else { 1. };
+        image
+            .pre_scale(flip(self.flip[0]), flip(self.flip[1]))
+            .post_rotate(turn as f32)
+    }
+
+    /// Moves it so its start lands on `at` in the edited image
+    pub(crate) fn start_at(&mut self, at: [f32; 2], mapping: &Mapping) {
+        // The stored start assumes it's turned before the image is stretched. It's turned after,
+        // so correct by how far apart the two put its middle.
+        let centre = self.middle();
+        let as_placed = mapping
+            .linear()
+            .pre_concat(Transform::from_rotate(self.rotation as f32))
+            .pre_scale(
+                if self.flip[0] { -1. } else { 1. },
+                if self.flip[1] { -1. } else { 1. },
+            );
+        let (mut placed, mut turned) = (centre, centre);
+        as_placed.map_point(&mut placed);
+        self.linear(mapping).map_point(&mut turned);
+        let start = mapping.to_original([at[0] + turned.x - placed.x, at[1] + turned.y - placed.y]);
+        self.set_start(
+            [start[0].round() as i32, start[1].round() as i32],
+            mapping.original,
+        );
+    }
+
+    /// Text, stamps and counters aren't stretched with the image
+    fn keeps_its_shape(&self) -> bool {
+        matches!(
+            self.shape,
+            Shape::Text(_) | Shape::Stamp(_) | Shape::Counter(_)
+        )
     }
 
     /// Left, top, right and bottom of what it covers in its own coordinates, its
@@ -314,14 +378,16 @@ impl Annotation {
     }
 
     /// How far its lines and its outline reach out of its bounds, in its own
-    /// coordinates
-    fn reach(&self) -> f32 {
+    /// coordinates. Takes `t` because an arrowhead's size depends on how long the arrow looks.
+    fn reach(&self, t: Transform) -> f32 {
         let half = self.line_width() / 2.;
         let outline = self.outline_width();
         match &self.shape {
             Shape::Arrow(to) => {
                 // the lines of the head reach out to the sides
-                let length = (to[0] as f32).hypot(to[1] as f32);
+                let (x, y) = (to[0] as f32, to[1] as f32);
+                let shown = (t.sx * x + t.kx * y).hypot(t.ky * x + t.sy * y);
+                let length = shown / scale_of(t).max(1e-6);
                 arrow_head(self.line_width(), length).1 + half + outline
             }
             Shape::Line(_) | Shape::Rect(_) | Shape::Ellipse(_) | Shape::Pen(_) => half + outline,
@@ -394,7 +460,7 @@ impl Annotation {
             for flip in [false, true] {
                 self.rotation = rotation;
                 self.flip = [flip, false];
-                let t = mapping.transform(self.placement(mapping.original), Point::zero());
+                let t = self.linear(mapping);
                 // how close to upright, without mirroring
                 let straight = t.sx + t.sy - t.kx.abs() - t.ky.abs();
                 if best.is_none_or(|(s, _, _)| straight > s) {

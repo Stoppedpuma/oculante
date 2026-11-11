@@ -142,14 +142,61 @@ pub(crate) fn mirrors(t: Transform) -> bool {
     t.sx * t.sy - t.kx * t.ky < 0.
 }
 
-/// How much larger a transform makes things
+/// How much larger a transform makes things on average. Lines use this for their width, so
+/// they're equally thick in every direction even on a stretched image.
 pub(crate) fn scale_of(t: Transform) -> f32 {
     (t.sx * t.sy - t.kx * t.ky).abs().sqrt()
 }
 
-/// Left, top, right and bottom in the edited image of its bounds, grown by `grow` in its own coordinates
+/// How much a transform scales things in the direction it shrinks them most
+pub(crate) fn least_scale(t: Transform) -> f32 {
+    let squares = t.sx * t.sx + t.kx * t.kx + t.ky * t.ky + t.sy * t.sy;
+    let det = t.sx * t.sy - t.kx * t.ky;
+    let least = (squares - (squares * squares - 4. * det * det).max(0.).sqrt()) / 2.;
+    least.max(0.).sqrt()
+}
+
+/// How much extra room lines need in an annotation's own coordinates on a stretched image.
+/// It's 1 when the image isn't stretched.
+pub(super) fn widening(t: Transform) -> f32 {
+    let scale = scale_of(t);
+    (scale / least_scale(t).max(scale * 0.01).max(1e-9)).max(1.)
+}
+
+/// `t` with the stretch taken out, closest transform that only moves, turns, mirrors and
+/// scales evenly. `centre` stays where `t` puts it.
+pub(crate) fn undistorted(t: Transform, centre: Point) -> Transform {
+    let scale = scale_of(t);
+    let mirrored = mirrors(t);
+    // the closest rotation, or reflection if `t` mirrors
+    let angle = if mirrored {
+        (t.ky + t.kx).atan2(t.sx - t.sy)
+    } else {
+        (t.ky - t.kx).atan2(t.sx + t.sy)
+    };
+    let (sin, cos) = angle.sin_cos();
+    let flip = if mirrored { -1. } else { 1. };
+    let linear = Transform::from_row(
+        cos * scale,
+        sin * scale,
+        -sin * scale * flip,
+        cos * scale * flip,
+        0.,
+        0.,
+    );
+    let mut at = centre;
+    t.map_point(&mut at);
+    let mut moved = centre;
+    linear.map_point(&mut moved);
+    linear.post_translate(at.x - moved.x, at.y - moved.y)
+}
+
+/// Left, top, right and bottom in the edited image of its bounds, grown by `grow` in its own
+/// coordinates. On a stretched image it grows enough to cover lines in every direction, so it
+/// can be a bit larger than needed.
 pub(super) fn extent(a: &Annotation, t: Transform, grow: f32) -> Option<[f32; 4]> {
     let b = a.bounds()?;
+    let grow = grow * widening(t);
     let mut corners = [
         Point::from_xy(b[0] - grow, b[1] - grow),
         Point::from_xy(b[2] + grow, b[1] - grow),
@@ -164,6 +211,17 @@ pub(super) fn extent(a: &Annotation, t: Transform, grow: f32) -> Option<[f32; 4]
                 [e[0].min(c.x), e[1].min(c.y), e[2].max(c.x), e[3].max(c.y)]
             }),
     )
+}
+
+/// The box around everything an annotation draws, lines and outline included. Unlike `extent`,
+/// the margin is the same on every side of a stretched image, so the selection box is even.
+pub(crate) fn drawn_extent(a: &Annotation, t: Transform) -> Option<[f32; 4]> {
+    if widening(t) <= 1.001 {
+        return extent(a, t, a.reach(t));
+    }
+    let e = extent(a, t, 0.)?;
+    let reach = a.reach(t) * scale_of(t);
+    Some([e[0] - reach, e[1] - reach, e[2] + reach, e[3] + reach])
 }
 
 /// The ones that are shown and have at least half of their area inside the box between two
@@ -207,7 +265,7 @@ pub(crate) fn hits(a: &Annotation, mapping: &Mapping, p: [f32; 2], slack: f32) -
     };
     let mut q = Point::from_xy(p[0], p[1]);
     back.map_point(&mut q);
-    touches(a, q, slack / scale_of(t).max(0.001))
+    touches_widened(a, q, slack / least_scale(t).max(0.001), widening(t))
 }
 
 /// How far a point, from the centre of an ellipse with these radii, is from its line.
@@ -246,10 +304,16 @@ fn segment_distance(q: Point, a: Point, b: Point) -> f32 {
 }
 
 /// Whether a point in the annotation's own coordinates is on it, or `slack` off it
+#[cfg(test)]
 pub(super) fn touches(a: &Annotation, q: Point, slack: f32) -> bool {
+    touches_widened(a, q, slack, 1.)
+}
+
+/// Like `touches`, with lines and outline `widen` times wider (see `widening`)
+fn touches_widened(a: &Annotation, q: Point, slack: f32, widen: f32) -> bool {
     // its outline is a part of it
-    let slack = slack + a.outline_width();
-    let near = a.line_width() / 2. + slack;
+    let slack = slack + a.outline_width() * widen;
+    let near = a.line_width() / 2. * widen + slack;
     let point = |p: [i32; 2]| Point::from_xy(p[0] as f32, p[1] as f32);
     let to_line = |p0: [i32; 2], p1: [i32; 2]| segment_distance(q, point(p0), point(p1));
     match &a.shape {

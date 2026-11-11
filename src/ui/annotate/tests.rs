@@ -8,7 +8,7 @@ fn hidden_ones_are_not_drawn() {
     hidden.hidden = true;
     let shown = arrow_at([5, 5], [60, 60]);
     let stack = vec![item(ImageOperation::Annotate(vec![hidden, shown.clone()]))];
-    assert_eq!(visible(&stack, &AnnotateUi::default()), vec![shown]);
+    assert_eq!(visible(&stack), vec![shown]);
 }
 
 /// Ctrl+A selects what is shown, as a box over all of it would
@@ -465,5 +465,191 @@ fn the_annotations_take_only_their_keys() {
     state.tool = None;
     let left = canvas_frame(&ctx, &mut list, &mut state, &[(Key::Delete, NONE)]);
     assert_eq!(left, vec![Key::Delete]);
+    assert_eq!(list.len(), 1);
+}
+
+/// Runs one frame with these events, the image shown at 100% in the top left
+fn events_frame(
+    ctx: &egui::Context,
+    list: &mut Vec<Annotation>,
+    state: &mut AnnotateUi,
+    mapping: &Mapping,
+    events: Vec<egui::Event>,
+) {
+    let geo = ImageGeometry {
+        scale: 1.,
+        offset: nalgebra::Vector2::new(0., 0.),
+        dimensions: mapping.result,
+    };
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(800., 600.),
+        )),
+        events,
+        focused: true,
+        ..Default::default()
+    };
+    let mut output = ctx.run_ui(input, |ui| {
+        canvas_ui(ui.ctx(), list, state, mapping, &geo, false, false);
+    });
+    output.textures_delta.clear();
+}
+
+fn button(pos: Pos2, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers,
+    }
+}
+
+fn mouse_drag(
+    ctx: &egui::Context,
+    list: &mut Vec<Annotation>,
+    state: &mut AnnotateUi,
+    mapping: &Mapping,
+    from: Pos2,
+    to: Pos2,
+    modifiers: egui::Modifiers,
+) {
+    let held = egui::Event::ModifiersChanged(modifiers);
+    let frames = [
+        vec![held.clone(), egui::Event::PointerMoved(from)],
+        vec![held.clone(), button(from, true, modifiers)],
+        vec![held.clone(), egui::Event::PointerMoved(from.lerp(to, 0.5))],
+        vec![held.clone(), egui::Event::PointerMoved(to)],
+        vec![held, button(to, false, modifiers)],
+    ];
+    for events in frames {
+        events_frame(ctx, list, state, mapping, events);
+    }
+}
+
+/// Shift gives a square or a circle as shown, even on a stretched image
+#[test]
+fn shift_squares_as_it_is_shown_on_a_stretched_image() {
+    let mapping = crate::annotate::tests::stretched();
+    for tool in [Tool::Frame, Tool::Circle, Tool::Spotlight] {
+        let ctx = egui::Context::default();
+        let mut list = vec![];
+        let mut state = AnnotateUi {
+            tool: Some(tool),
+            ..Default::default()
+        };
+        state.prepare((200, 200));
+        mouse_drag(
+            &ctx,
+            &mut list,
+            &mut state,
+            &mapping,
+            pos2(40., 40.),
+            pos2(140., 70.),
+            egui::Modifiers::SHIFT,
+        );
+        assert_eq!(list.len(), 1, "{tool:?}");
+        let shown = selection_bounds(&list, &[0], &mapping).unwrap().shape;
+        let (w, h) = (shown[2] - shown[0], shown[3] - shown[1]);
+        assert!((w - h).abs() <= 2. && w >= 98., "{tool:?}: {w} by {h}");
+    }
+    // a stamp is as large as the drag
+    let ctx = egui::Context::default();
+    let mut list = vec![];
+    let mut state = AnnotateUi {
+        tool: Some(Tool::Stamp(Stamp::Check)),
+        ..Default::default()
+    };
+    state.prepare((200, 200));
+    mouse_drag(
+        &ctx,
+        &mut list,
+        &mut state,
+        &mapping,
+        pos2(40., 40.),
+        pos2(100., 100.),
+        egui::Modifiers::NONE,
+    );
+    let shown = selection_bounds(&list, &[0], &mapping).unwrap().shape;
+    let (w, h) = (shown[2] - shown[0], shown[3] - shown[1]);
+    assert!((w - 60.).abs() <= 2. && (h - 60.).abs() <= 2., "{w} by {h}");
+    assert!(
+        (shown[0] - 40.).abs() <= 2. && (shown[1] - 40.).abs() <= 2.,
+        "{shown:?}"
+    );
+}
+
+/// Typing goes by the drawn text: a click on it moves the caret, a click elsewhere ends typing,
+/// and long text isn't wrapped
+#[test]
+fn typing_goes_by_the_text_as_it_is_drawn() {
+    let ctx = egui::Context::default();
+    let mapping = Mapping::new(&[], (400, 200));
+    let mut a = Annotation::new(Shape::Text("Hello".into()), [255; 4], 40, [20, 20]);
+    a.rotation = 30;
+    let mut list = vec![a];
+    let mut state = AnnotateUi {
+        tool: Some(Tool::Text),
+        ..Default::default()
+    };
+    state.prepare((400, 200));
+    state.start_typing(0);
+    let stack = vec![item(ImageOperation::Annotate(list.clone()))];
+    assert_eq!(visible(&stack).len(), 1, "drawn while it is typed");
+    events_frame(&ctx, &mut list, &mut state, &mapping, vec![]);
+    events_frame(
+        &ctx,
+        &mut list,
+        &mut state,
+        &mapping,
+        vec![egui::Event::Text("!".into())],
+    );
+    assert_eq!(list[0].shape, Shape::Text("Hello!".into()));
+    assert!(
+        !state.overlay.is_empty(),
+        "the caret and the frame are shown"
+    );
+    // click on the turned "e", the caret goes before it
+    let e = line_positions("Hello!", &list[0]);
+    let mut at = Point::from_xy((e[1] + e[2]) / 2. - 1., 25.);
+    list[0].transform(&mapping).map_point(&mut at);
+    let at = pos2(at.x, at.y);
+    for events in [
+        vec![egui::Event::PointerMoved(at)],
+        vec![button(at, true, egui::Modifiers::NONE)],
+        vec![button(at, false, egui::Modifiers::NONE)],
+        vec![],
+    ] {
+        events_frame(&ctx, &mut list, &mut state, &mapping, events);
+    }
+    assert_eq!(state.typing, Some(0), "still typing");
+    events_frame(
+        &ctx,
+        &mut list,
+        &mut state,
+        &mapping,
+        vec![egui::Event::Text("X".into())],
+    );
+    assert_eq!(list[0].shape, Shape::Text("HXello!".into()));
+    events_frame(
+        &ctx,
+        &mut list,
+        &mut state,
+        &mapping,
+        vec![egui::Event::Text(" and a long way on".into())],
+    );
+    let Shape::Text(text) = &list[0].shape else {
+        unreachable!()
+    };
+    assert!(!text.contains('\n'));
+    let away = pos2(390., 190.);
+    for events in [
+        vec![egui::Event::PointerMoved(away)],
+        vec![button(away, true, egui::Modifiers::NONE)],
+        vec![button(away, false, egui::Modifiers::NONE)],
+    ] {
+        events_frame(&ctx, &mut list, &mut state, &mapping, events);
+    }
+    assert_eq!(state.typing, None);
     assert_eq!(list.len(), 1);
 }

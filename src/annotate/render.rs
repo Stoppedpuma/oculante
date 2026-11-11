@@ -15,15 +15,27 @@ pub(super) fn arrow_head(width: f32, length: f32) -> (f32, f32) {
 /// The three points of an arrowhead at `to`: the tip and the ends of its two lines. The tip
 /// sits half a line back from `to`, so the round line around it ends at `to`.
 pub(super) fn arrow_head_corners(to: [i32; 2], width: f32) -> Option<[Point; 3]> {
-    let (x, y) = (to[0] as f32, to[1] as f32);
+    arrow_corners(
+        Point::zero(),
+        Point::from_xy(to[0] as f32, to[1] as f32),
+        width,
+        1.,
+    )
+}
+
+/// Like `arrow_head_corners`, for an arrow drawn `scale` times its own size. Working it out
+/// where it's drawn keeps the head symmetric on a stretched image.
+fn arrow_corners(from: Point, to: Point, width: f32, scale: f32) -> Option<[Point; 3]> {
+    let (x, y) = (to.x - from.x, to.y - from.y);
     let length = x.hypot(y);
-    if length < 1. {
+    if length < scale.max(1e-6) {
         return None;
     }
     let (dx, dy) = (x / length, y / length);
-    let back = (width / 2.).min(length * 0.3);
-    let (tx, ty) = (x - dx * back, y - dy * back);
-    let (head, half) = arrow_head(width, length);
+    let back = (width * scale / 2.).min(length * 0.3);
+    let (tx, ty) = (to.x - dx * back, to.y - dy * back);
+    let (head, half) = arrow_head(width, length / scale);
+    let (head, half) = (head * scale, half * scale);
     let (bx, by) = (tx - dx * head, ty - dy * head);
     Some([
         Point::from_xy(tx, ty),
@@ -32,13 +44,13 @@ pub(super) fn arrow_head_corners(to: [i32; 2], width: f32) -> Option<[Point; 3]>
     ])
 }
 
-/// An arrow from where it starts to `to` as one path: the line to the tip and the two lines of
-/// the head. Stroked at once, where they meet is drawn once, so it is as see-through there as
+/// An arrow from `from` to `to` as one path, the line to the tip and the two lines of the
+/// head. Stroked at once, where they meet is drawn once, so it is as see-through there as
 /// anywhere.
-fn arrow(to: [i32; 2], width: f32) -> Option<Path> {
-    let [tip, left, right] = arrow_head_corners(to, width)?;
+fn arrow(from: Point, to: Point, width: f32, scale: f32) -> Option<Path> {
+    let [tip, left, right] = arrow_corners(from, to, width, scale)?;
     let mut path = PathBuilder::new();
-    path.move_to(0., 0.);
+    path.move_to(from.x, from.y);
     path.line_to(tip.x, tip.y);
     path.move_to(left.x, left.y);
     path.line_to(tip.x, tip.y);
@@ -63,7 +75,7 @@ pub(super) fn area(a: &Annotation, t: Transform, size: (u32, u32)) -> Option<Rec
     } else {
         2.
     };
-    in_pixels(extent(a, t, a.reach() + a.shadow_reach())?, smooth, size)
+    in_pixels(extent(a, t, a.reach(t) + a.shadow_reach())?, smooth, size)
 }
 
 /// Of a spotlight, its spot and its smooth edge: when only the spot moves, turns or changes size,
@@ -100,17 +112,28 @@ pub(super) fn draw<P: Pixel<Subpixel = u8>>(
     t: Transform,
     area: Rect,
 ) {
-    if let Shape::Redact { style, .. } = &a.shape {
+    if let Shape::Redact { style, size } = &a.shape {
+        let inside = redacted(*size, t, area);
+        let hides = |x: u32, y: u32| {
+            inside
+                .as_ref()
+                .is_none_or(|inside| inside[((y - area.y) * area.width + x - area.x) as usize])
+        };
         match style {
-            Redaction::Pixelate => {
-                pixelate(img, area, (a.width as f32 * scale_of(t)).round() as u32)
-            }
+            Redaction::Pixelate => pixelate(
+                img,
+                area,
+                (a.width as f32 * scale_of(t)).round() as u32,
+                hides,
+            ),
             Redaction::Fill => {
                 let [r, g, b, _] = a.color;
                 let color = *P::from_slice(&[r, g, b, 255][..channels::<P>()]);
                 for y in area.y..area.y + area.height {
                     for x in area.x..area.x + area.width {
-                        img.put_pixel(x, y, color);
+                        if hides(x, y) {
+                            img.put_pixel(x, y, color);
+                        }
                     }
                 }
             }
@@ -186,7 +209,7 @@ fn trace(layer: &mut Pixmap, a: &Annotation, t: Transform, outline: bool) {
         line_join: LineJoin::Round,
         ..Default::default()
     };
-    // a stamp and a counter are filled, their outline goes around them
+    // stamps and counters are filled, with the outline stroked around them
     let fill_or_outline = |layer: &mut Pixmap, path: &Path| {
         if outline > 0. {
             let around = tiny_skia::Stroke {
@@ -197,42 +220,52 @@ fn trace(layer: &mut Pixmap, a: &Annotation, t: Transform, outline: bool) {
         }
         layer.fill_path(path, &paint, FillRule::Winding, t, None);
     };
+    // Transform the lines before stroking them, so they're equally thick in every direction on
+    // a stretched image
+    let scale = scale_of(t);
+    let wide = tiny_skia::Stroke {
+        width: stroke.width * scale,
+        ..stroke.clone()
+    };
+    let mut line = |path: Option<Path>, stroke: &tiny_skia::Stroke| {
+        if let Some(path) = path.and_then(|path| path.transform(t)) {
+            layer.stroke_path(&path, &paint, stroke, Transform::identity(), None);
+        }
+    };
+    let at = |p: [i32; 2]| {
+        let mut p = Point::from_xy(p[0] as f32, p[1] as f32);
+        t.map_point(&mut p);
+        p
+    };
     match &a.shape {
         Shape::Arrow(to) => {
-            if let Some(path) = arrow(*to, a.line_width()) {
-                layer.stroke_path(&path, &paint, &stroke, t, None);
+            if let Some(path) = arrow(at([0, 0]), at(*to), a.line_width(), scale) {
+                layer.stroke_path(&path, &paint, &wide, Transform::identity(), None);
             }
         }
-        Shape::Line(to) => {
-            if let Some(line) = polyline(&[[0, 0], *to]) {
-                layer.stroke_path(&line, &paint, &stroke, t, None);
-            }
-        }
+        Shape::Line(to) => line(polyline(&[[0, 0], *to]), &wide),
         Shape::Rect(size) => {
-            if let Some(frame) = frame_path(*size, a.corner_radius()) {
+            if let Some(frame) = box_path(*size, a.radius as f32, t) {
                 let stroke = tiny_skia::Stroke {
                     line_join: LineJoin::Miter,
-                    ..stroke
+                    ..wide
                 };
-                layer.stroke_path(&frame, &paint, &stroke, t, None);
+                layer.stroke_path(&frame, &paint, &stroke, Transform::identity(), None);
             }
         }
-        Shape::Ellipse(size) => {
-            let oval = tiny_skia::Rect::from_xywh(0., 0., size[0] as f32, size[1] as f32)
-                .and_then(PathBuilder::from_oval);
-            if let Some(oval) = oval {
-                layer.stroke_path(&oval, &paint, &stroke, t, None);
-            }
-        }
+        Shape::Ellipse(size) => line(
+            tiny_skia::Rect::from_xywh(0., 0., size[0] as f32, size[1] as f32)
+                .and_then(PathBuilder::from_oval),
+            &wide,
+        ),
         Shape::Pen(points) => {
             if let [only] = points.as_slice() {
-                let dot =
-                    PathBuilder::from_circle(only[0] as f32, only[1] as f32, stroke.width / 2.);
-                if let Some(dot) = dot {
-                    layer.fill_path(&dot, &paint, FillRule::Winding, t, None);
+                let centre = at(*only);
+                if let Some(dot) = PathBuilder::from_circle(centre.x, centre.y, wide.width / 2.) {
+                    layer.fill_path(&dot, &paint, FillRule::Winding, Transform::identity(), None);
                 }
-            } else if let Some(line) = polyline(points) {
-                layer.stroke_path(&line, &paint, &stroke, t, None);
+            } else {
+                line(polyline(points), &wide);
             }
         }
         // the letters, or the letters with their outline in the color of the outline
@@ -309,31 +342,49 @@ fn knock_out(
     covered
 }
 
-/// A frame this large, its corners rounded by `radius`
-pub(super) fn frame_path(size: [i32; 2], radius: f32) -> Option<Path> {
+/// A box of this size where `t` puts it. Built in the edited image, so rounded corners stay
+/// circular on a stretched image. The radius is capped at half the shorter side.
+pub(super) fn box_path(size: [i32; 2], radius: f32, t: Transform) -> Option<Path> {
     let (w, h) = (size[0] as f32, size[1] as f32);
-    let mut frame = PathBuilder::new();
-    if radius <= 0. {
-        frame.move_to(0., 0.);
-        frame.line_to(w, 0.);
-        frame.line_to(w, h);
-        frame.line_to(0., h);
+    let mut corners = [
+        Point::from_xy(0., 0.),
+        Point::from_xy(w, 0.),
+        Point::from_xy(w, h),
+        Point::from_xy(0., h),
+    ];
+    t.map_points(&mut corners);
+    let side = |a: Point, b: Point| (b.x - a.x).hypot(b.y - a.y);
+    let r = (radius * scale_of(t))
+        .min(side(corners[0], corners[1]) / 2.)
+        .min(side(corners[1], corners[2]) / 2.);
+    let mut path = PathBuilder::new();
+    if r <= 0. {
+        path.move_to(corners[0].x, corners[0].y);
+        for c in &corners[1..] {
+            path.line_to(c.x, c.y);
+        }
     } else {
+        let toward = |from: Point, to: Point, by: f32| {
+            let length = side(from, to).max(1e-6);
+            Point::from_xy(
+                from.x + (to.x - from.x) / length * by,
+                from.y + (to.y - from.y) / length * by,
+            )
+        };
         // a quarter of a circle, as a curve
-        let r = radius;
         let k = r * (1. - 0.552_284_8);
-        frame.move_to(r, 0.);
-        frame.line_to(w - r, 0.);
-        frame.cubic_to(w - k, 0., w, k, w, r);
-        frame.line_to(w, h - r);
-        frame.cubic_to(w, h - k, w - k, h, w - r, h);
-        frame.line_to(r, h);
-        frame.cubic_to(k, h, 0., h - k, 0., h - r);
-        frame.line_to(0., r);
-        frame.cubic_to(0., k, k, 0., r, 0.);
+        let start = toward(corners[0], corners[1], r);
+        path.move_to(start.x, start.y);
+        for i in 1..=4 {
+            let (before, corner, after) = (corners[i - 1], corners[i % 4], corners[(i + 1) % 4]);
+            let (a, b) = (toward(corner, before, r), toward(corner, after, r));
+            let (ca, cb) = (toward(corner, before, k), toward(corner, after, k));
+            path.line_to(a.x, a.y);
+            path.cubic_to(ca.x, ca.y, cb.x, cb.y, b.x, b.y);
+        }
     }
-    frame.close();
-    frame.finish()
+    path.close();
+    path.finish()
 }
 
 /// A line through the points of a pen
@@ -349,8 +400,29 @@ pub(super) fn polyline(points: &[[i32; 2]]) -> Option<Path> {
     line.finish()
 }
 
-/// Hides an area in blocks, each the average color of its pixels
-fn pixelate<P: Pixel<Subpixel = u8>>(img: &mut Pixels<P>, area: Rect, block: u32) {
+/// Which pixels of `area` a turned redaction covers, row by row. Partly covered pixels count,
+/// so nothing shows at its edges. `None` when it's upright and covers all of `area`.
+fn redacted(size: [i32; 2], t: Transform, area: Rect) -> Option<Vec<bool>> {
+    let upright =
+        (t.kx.abs() < 1e-6 && t.ky.abs() < 1e-6) || (t.sx.abs() < 1e-6 && t.sy.abs() < 1e-6);
+    if upright {
+        return None;
+    }
+    let mut mask = tiny_skia::Mask::new(area.width, area.height)?;
+    let rect = tiny_skia::Rect::from_xywh(0., 0., size[0] as f32, size[1] as f32)?;
+    let t = t.post_translate(-(area.x as f32), -(area.y as f32));
+    mask.fill_path(&PathBuilder::from_rect(rect), FillRule::Winding, true, t);
+    Some(mask.data().iter().map(|covered| *covered > 0).collect())
+}
+
+/// Hides an area in blocks, each the average color of its pixels. Only pixels where `hides`
+/// is true change.
+fn pixelate<P: Pixel<Subpixel = u8>>(
+    img: &mut Pixels<P>,
+    area: Rect,
+    block: u32,
+    hides: impl Fn(u32, u32) -> bool,
+) {
     let n = channels::<P>();
     let block = block.max(2);
     let (right, bottom) = (area.x + area.width, area.y + area.height);
@@ -382,7 +454,9 @@ fn pixelate<P: Pixel<Subpixel = u8>>(img: &mut Pixels<P>, area: Rect, block: u32
             };
             for y in top..b {
                 for x in left..r {
-                    img.put_pixel(x, y, *P::from_slice(&color[..n]));
+                    if hides(x, y) {
+                        img.put_pixel(x, y, *P::from_slice(&color[..n]));
+                    }
                 }
             }
         }
@@ -490,14 +564,15 @@ fn box_blur(values: &mut [f32], w: usize, h: usize, radius: usize) {
     }
 }
 
-/// The area a spotlight leaves as it is, uses its own coordinates
-fn spot_path(a: &Annotation) -> Option<Path> {
+/// The area a spotlight leaves as it is, where `t` puts it
+fn spot_path(a: &Annotation, t: Transform) -> Option<Path> {
     match a.shape {
         Shape::Spotlight { size, oval: true } => {
             tiny_skia::Rect::from_xywh(0., 0., size[0] as f32, size[1] as f32)
-                .and_then(PathBuilder::from_oval)
+                .and_then(PathBuilder::from_oval)?
+                .transform(t)
         }
-        Shape::Spotlight { size, oval: false } => frame_path(size, a.corner_radius()),
+        Shape::Spotlight { size, oval: false } => box_path(size, a.radius as f32, t),
         _ => None,
     }
 }
@@ -526,11 +601,11 @@ fn dim<P: Pixel<Subpixel = u8>>(
         ..Paint::default()
     };
     for a in spotlights {
-        if let Some(spot) = spot_path(a) {
-            let t = a
-                .transform(mapping)
-                .post_translate(-((origin.0 + area.x) as f32), -((origin.1 + area.y) as f32));
-            layer.fill_path(&spot, &cut, FillRule::Winding, t, None);
+        let t = a
+            .transform(mapping)
+            .post_translate(-((origin.0 + area.x) as f32), -((origin.1 + area.y) as f32));
+        if let Some(spot) = spot_path(a, t) {
+            layer.fill_path(&spot, &cut, FillRule::Winding, Transform::identity(), None);
         }
     }
     blend(img, &layer, area);

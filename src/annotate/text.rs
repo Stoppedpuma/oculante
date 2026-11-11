@@ -63,7 +63,7 @@ struct TextKey {
 static TEXTS: Mutex<Vec<(TextKey, Arc<TextLayout>)>> = Mutex::new(Vec::new());
 
 /// Distance of the lines of a text, in sizes of the text
-const LINE_HEIGHT: f32 = 1.25;
+pub(crate) const LINE_HEIGHT: f32 = 1.25;
 
 /// The text of an annotation, in its size, colors and font
 pub(super) fn text_layout(text: &str, a: &Annotation) -> Option<Arc<TextLayout>> {
@@ -89,6 +89,88 @@ pub(super) fn text_layout(text: &str, a: &Annotation) -> Option<Arc<TextLayout>>
     texts.insert(0, (key, layout.clone()));
     texts.truncate(32);
     Some(layout)
+}
+
+/// Recent results of `line_positions`, newest first
+static POSITIONS: Mutex<Vec<(TextKey, Arc<Vec<f32>>)>> = Mutex::new(Vec::new());
+
+/// Where each character of a line starts, plus where the line ends, in the text's own
+/// coordinates. Used to place the caret and the selection while typing.
+pub(crate) fn line_positions(line: &str, a: &Annotation) -> Arc<Vec<f32>> {
+    let fonts = fonts();
+    let key = TextKey {
+        text: line.into(),
+        size: a.width,
+        color: [0, 0, 0, 255],
+        font: a.font.clone(),
+        outline: 0,
+        outline_color: [0; 4],
+        fonts: FONTS_VERSION.load(Ordering::Relaxed),
+    };
+    if let Ok(mut known) = POSITIONS.lock()
+        && let Some(i) = known.iter().position(|(k, _)| *k == key)
+    {
+        let found = known.remove(i);
+        let positions = found.1.clone();
+        known.insert(0, found);
+        return positions;
+    }
+    let positions = Arc::new(lay_out_positions(&key, fonts));
+    if let Ok(mut known) = POSITIONS.lock() {
+        known.insert(0, (key, positions.clone()));
+        known.truncate(16);
+    }
+    positions
+}
+
+fn lay_out_positions(key: &TextKey, fonts: Arc<usvg::fontdb::Database>) -> Vec<f32> {
+    let count = key.text.chars().count();
+    // a marker after the line shows where it ends, trailing spaces included
+    let marked = TextKey {
+        text: format!("{}|", key.text),
+        size: key.size,
+        color: key.color,
+        font: key.font.clone(),
+        outline: key.outline,
+        outline_color: key.outline_color,
+        fonts: key.fonts,
+    };
+    let mut glyphs = vec![];
+    if let Some(layout) = lay_out(&marked, fonts) {
+        glyphs_of(layout.tree.root(), &mut glyphs);
+    }
+    // characters in a ligature share its position
+    let mut positions = Vec::with_capacity(count + 1);
+    for (text, x) in &glyphs {
+        for _ in text.chars() {
+            positions.push(*x);
+        }
+    }
+    if positions.len() == count + 1 {
+        return positions;
+    }
+    // fallback if the glyphs don't line up with the characters
+    let end = glyphs.last().map_or(0., |(_, x)| *x);
+    (0..=count)
+        .map(|i| end * i as f32 / count.max(1) as f32)
+        .collect()
+}
+
+/// Collects the text and x position of each glyph
+fn glyphs_of(group: &usvg::Group, glyphs: &mut Vec<(String, f32)>) {
+    for node in group.children() {
+        match node {
+            usvg::Node::Text(text) => {
+                for span in text.layouted() {
+                    for glyph in &span.positioned_glyphs {
+                        glyphs.push((glyph.text.clone(), glyph.transform().tx));
+                    }
+                }
+            }
+            usvg::Node::Group(group) => glyphs_of(group, glyphs),
+            _ => {}
+        }
+    }
 }
 
 fn lay_out(key: &TextKey, fonts: Arc<usvg::fontdb::Database>) -> Option<TextLayout> {

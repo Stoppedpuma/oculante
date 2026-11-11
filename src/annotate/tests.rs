@@ -1762,3 +1762,308 @@ fn drawn_in_every_layout() {
         assert_eq!(img.as_bytes(), original.as_bytes(), "{color:?}");
     }
 }
+
+/// A 200×200 image resized to 400×200
+pub(crate) fn stretched() -> Mapping {
+    let resize = item(ImageOperation::Resize {
+        dimensions: (400, 200),
+        aspect: false,
+        filter: crate::image_editing::ScaleFilter::Box,
+    });
+    Mapping::new(&[resize], (200, 200))
+}
+
+/// How many pixels in a row, starting at `from`, are roughly `color`
+fn run_of(img: &RgbaImage, from: (u32, u32), step: (i32, i32), color: [u8; 3]) -> u32 {
+    let (mut x, mut y, mut n) = (from.0 as i32, from.1 as i32, 0);
+    while (0..img.width() as i32).contains(&x) && (0..img.height() as i32).contains(&y) {
+        let p = img.get_pixel(x as u32, y as u32).0;
+        if (0..3).any(|c| p[c].abs_diff(color[c]) > 100) {
+            break;
+        }
+        n += 1;
+        x += step.0;
+        y += step.1;
+    }
+    n
+}
+
+/// On a stretched image a frame's lines are equally thick horizontally and vertically
+#[test]
+fn lines_are_as_wide_on_a_stretched_image() {
+    let mapping = stretched();
+    let img = RgbaImage::from_pixel(400, 200, Rgba([0, 0, 0, 255]));
+    // shows as 100×100
+    let frame = Annotation::new(Shape::Rect([50, 100]), [255, 255, 255, 255], 8, [50, 50]);
+    let drawn = drawn_at_once(&img, &[frame], &mapping);
+    let white = [255, 255, 255];
+    // measure the top line and the left line
+    let top = run_of(&drawn, (150, 40), (0, 1), [0, 0, 0]);
+    let across_top = run_of(&drawn, (150, 40 + top), (0, 1), white);
+    let left = run_of(&drawn, (90, 100), (1, 0), [0, 0, 0]);
+    let across_left = run_of(&drawn, (90 + left, 100), (1, 0), white);
+    assert!(
+        across_top.abs_diff(across_left) <= 1,
+        "{across_top} and {across_left}"
+    );
+    // 8 × √2, the image's average scale
+    assert!((10..=13).contains(&across_top), "{across_top}");
+    let reach = selection_bounds(&[frame_like()], &[0], &mapping).unwrap();
+    assert!(reach.drawn[1] <= 50. - 5.6 && reach.drawn[0] <= 100. - 5.6);
+}
+
+fn frame_like() -> Annotation {
+    Annotation::new(Shape::Rect([50, 100]), [255, 255, 255, 255], 8, [50, 50])
+}
+
+/// Counters, stamps and text aren't stretched with the image, so a counter stays round
+#[test]
+fn counters_stamps_and_texts_keep_their_shape_on_a_stretched_image() {
+    let mapping = stretched();
+    let img = RgbaImage::from_pixel(400, 200, Rgba([0, 0, 0, 255]));
+    let counter = Annotation::new(Shape::Counter(1), [255, 255, 255, 255], 60, [70, 70]);
+    let drawn = drawn_at_once(&img, std::slice::from_ref(&counter), &mapping);
+    let white: Vec<(u32, u32)> = drawn
+        .enumerate_pixels()
+        .filter(|(_, _, p)| p.0[0] > 128)
+        .map(|(x, y, _)| (x, y))
+        .collect();
+    let wide = white.iter().map(|p| p.0).max().unwrap() - white.iter().map(|p| p.0).min().unwrap();
+    let high = white.iter().map(|p| p.1).max().unwrap() - white.iter().map(|p| p.1).min().unwrap();
+    assert!(wide.abs_diff(high) <= 1, "{wide} by {high}");
+    // and its middle is still where it was placed
+    let middle = mapping.to_result([100., 100.]);
+    let (x, y) = (
+        white.iter().map(|p| p.0 as f32).sum::<f32>() / white.len() as f32,
+        white.iter().map(|p| p.1 as f32).sum::<f32>() / white.len() as f32,
+    );
+    assert!(
+        (x - middle[0]).abs() < 2. && (y - middle[1]).abs() < 2.,
+        "{x},{y}"
+    );
+    for a in [
+        counter,
+        Annotation::new(Shape::Stamp(Stamp::Check), [255; 4], 40, [10, 10]),
+        Annotation::new(Shape::Text("Hi".into()), [255; 4], 30, [10, 10]),
+    ] {
+        let t = a.transform(&mapping);
+        let (x, y) = (t.sx.hypot(t.ky), t.kx.hypot(t.sy));
+        assert!(
+            (x - y).abs() < 1e-4 && (t.sx * t.kx + t.ky * t.sy).abs() < 1e-4,
+            "{a:?}"
+        );
+    }
+    // they still turn with the image
+    let turned = Mapping::new(&[item(ImageOperation::Rotate(90))], (200, 200));
+    let a = Annotation::new(Shape::Stamp(Stamp::Check), [255; 4], 40, [10, 10]);
+    let full = turned.transform(a.placement((200, 200)), Point::zero());
+    let t = a.transform(&turned);
+    assert!((t.sx - full.sx).abs() < 1e-4 && (t.ky - full.ky).abs() < 1e-4);
+    assert!((t.kx - full.kx).abs() < 1e-4 && (t.sy - full.sy).abs() < 1e-4);
+}
+
+/// A turned redaction only hides the turned box, and clicks match it
+#[test]
+fn a_turned_redaction_hides_and_is_hit_where_it_is() {
+    let mapping = Mapping::new(&[], (200, 200));
+    let img = RgbaImage::from_pixel(200, 200, Rgba([0, 0, 0, 255]));
+    for style in [Redaction::Fill, Redaction::Pixelate] {
+        let mut redaction = Annotation::new(
+            Shape::Redact {
+                size: [80, 80],
+                style,
+            },
+            [255, 255, 255, 255],
+            8,
+            [60, 60],
+        );
+        let middle = middle_in(&redaction, &mapping).unwrap();
+        redaction = rotated(&redaction, &mapping, middle, 30);
+        let mut white = gradient(200, 200);
+        for p in white.pixels_mut() {
+            p.0 = [255, 255, 255, 255];
+        }
+        let base = if style == Redaction::Fill {
+            &img
+        } else {
+            &white
+        };
+        let drawn = drawn_at_once(base, std::slice::from_ref(&redaction), &mapping);
+        if style == Redaction::Fill {
+            assert_eq!(
+                drawn.get_pixel(100, 100).0,
+                [255; 4],
+                "the middle is hidden"
+            );
+            // a corner of the upright box around it stays visible
+            let e = extent(&redaction, redaction.transform(&mapping), 0.).unwrap();
+            let corner = (e[0].ceil() as u32 + 1, e[1].ceil() as u32 + 1);
+            assert_eq!(
+                drawn.get_pixel(corner.0, corner.1).0,
+                [0, 0, 0, 255],
+                "{corner:?}"
+            );
+            // its own corner is hidden and can be clicked
+            let mut own = Point::from_xy(4., 4.);
+            redaction.transform(&mapping).map_point(&mut own);
+            assert_eq!(drawn.get_pixel(own.x as u32, own.y as u32).0, [255; 4]);
+            assert!(hits(&redaction, &mapping, [own.x, own.y], 0.));
+            assert!(!hits(
+                &redaction,
+                &mapping,
+                [corner.0 as f32, corner.1 as f32],
+                0.
+            ));
+        } else {
+            assert_eq!(drawn.get_pixel(100, 100).0, [255; 4]);
+        }
+    }
+}
+
+/// Caret positions follow the drawn letters
+#[test]
+fn the_caret_goes_where_the_letters_are() {
+    let a = Annotation::new(Shape::Text("Hi there".into()), [255; 4], 40, [0, 0]);
+    let positions = line_positions("Hi there", &a);
+    assert_eq!(positions.len(), 9);
+    assert_eq!(positions[0], 0.);
+    assert!(positions.windows(2).all(|w| w[1] > w[0]), "{positions:?}");
+    let bounds = text_layout("Hi there", &a).unwrap().bounds;
+    assert!(
+        (positions[8] - bounds[2]).abs() < 6.,
+        "{positions:?} {bounds:?}"
+    );
+    // trailing spaces count, and bold is wider
+    assert!(line_positions("Hi  ", &a)[4] > line_positions("Hi", &a)[2] + 10.);
+    let mut bold = a.clone();
+    bold.font.weight = 700;
+    assert!(line_positions("Hi there", &bold)[8] > positions[8]);
+    assert_eq!(*line_positions("", &a), vec![0.]);
+}
+
+/// On a stretched image the selection box has the same margin on every side
+#[test]
+fn the_selection_box_is_as_far_out_on_every_side_of_a_stretched_image() {
+    let mapping = stretched();
+    let width = 8;
+    for a in [
+        Annotation::new(Shape::Rect([50, 100]), [255; 4], width, [50, 50]),
+        Annotation::new(Shape::Ellipse([50, 100]), [255; 4], width, [50, 50]),
+        Annotation::new(Shape::Line([60, 40]), [255; 4], width, [50, 50]),
+        {
+            let mut framed = Annotation::new(Shape::Rect([50, 100]), [255; 4], width, [50, 50]);
+            framed.outline = 3;
+            framed
+        },
+    ] {
+        let bounds = selection_bounds(std::slice::from_ref(&a), &[0], &mapping).unwrap();
+        let (s, d) = (bounds.shape, bounds.drawn);
+        let gaps = [s[0] - d[0], s[1] - d[1], d[2] - s[2], d[3] - s[3]];
+        let reach = (width as f32 / 2. + a.outline as f32) * 2f32.sqrt();
+        for gap in gaps {
+            assert!(
+                (gap - reach).abs() < 0.01,
+                "{:?}: {gaps:?}, {reach}",
+                a.shape
+            );
+        }
+    }
+    // unchanged without a stretch
+    let plain = Mapping::new(&[], (200, 200));
+    let a = Annotation::new(Shape::Rect([50, 100]), [255; 4], width, [50, 50]);
+    let bounds = selection_bounds(std::slice::from_ref(&a), &[0], &plain).unwrap();
+    assert_eq!(bounds.drawn, [46., 46., 104., 154.]);
+}
+
+/// A box's width and height sides as vectors, after `t`
+fn sides(size: [f32; 2], t: Transform) -> [[f32; 2]; 2] {
+    [
+        [t.sx * size[0], t.ky * size[0]],
+        [t.kx * size[1], t.sy * size[1]],
+    ]
+}
+
+/// Turning a shape on a stretched image doesn't skew it
+#[test]
+fn turned_on_a_stretched_image_it_is_not_skewed() {
+    let mapping = stretched();
+    for shape in [
+        Shape::Rect([50, 100]),
+        Shape::Ellipse([50, 100]),
+        Shape::Redact {
+            size: [50, 100],
+            style: Redaction::Fill,
+        },
+        Shape::Spotlight {
+            size: [50, 100],
+            oval: false,
+        },
+    ] {
+        let a = Annotation::new(shape, [255; 4], 6, [50, 50]);
+        let middle = middle_in(&a, &mapping).unwrap();
+        for degrees in [30, 90, -45] {
+            let turned = rotated(&a, &mapping, middle, degrees);
+            let t = turned.transform(&mapping);
+            let [w, h] = sides([50., 100.], t);
+            let length = |v: [f32; 2]| v[0].hypot(v[1]);
+            // still 100×100 with right angles
+            assert!((length(w) - 100.).abs() < 0.01, "{degrees}: {w:?}");
+            assert!((length(h) - 100.).abs() < 0.01, "{degrees}: {h:?}");
+            assert!(
+                (w[0] * h[0] + w[1] * h[1]).abs() < 0.01,
+                "{degrees}: {w:?} {h:?}"
+            );
+            assert!((shown_angle(&turned, &mapping) - degrees as f32).abs() < 0.01);
+            let now = middle_in(&turned, &mapping).unwrap();
+            assert!((now[0] - middle[0]).abs() <= 1. && (now[1] - middle[1]).abs() <= 1.);
+        }
+    }
+    // a turned line keeps its length
+    let line = Annotation::new(Shape::Line([50, 0]), [255; 4], 6, [50, 100]);
+    let middle = middle_in(&line, &mapping).unwrap();
+    let turned = rotated(&line, &mapping, middle, 90);
+    let ends = ends_of(&turned, &mapping);
+    let (dx, dy) = (ends[1][0] - ends[0][0], ends[1][1] - ends[0][1]);
+    assert!(dx.abs() < 0.01 && (dy - 100.).abs() < 0.01, "{ends:?}");
+    // and its ends follow a resize
+    let turned = rotated(&line, &mapping, middle, 30);
+    let [start, end] = ends_of(&turned, &mapping);
+    let stretched_line = resized(&turned, &mapping, start, [2., 2.], [0., 0.]);
+    let [s, e] = ends_of(&stretched_line, &mapping);
+    let wanted = [
+        start[0] + 2. * (end[0] - start[0]),
+        start[1] + 2. * (end[1] - start[1]),
+    ];
+    assert!(
+        (s[0] - start[0]).abs() <= 1.5 && (s[1] - start[1]).abs() <= 1.5,
+        "{s:?} {start:?}"
+    );
+    assert!(
+        (e[0] - wanted[0]).abs() <= 2. && (e[1] - wanted[1]).abs() <= 2.,
+        "{e:?} {wanted:?}"
+    );
+}
+
+/// Rounded corners stay circular on a stretched image
+#[test]
+fn round_corners_stay_round_on_a_stretched_image() {
+    let mapping = stretched();
+    let img = RgbaImage::from_pixel(400, 200, Rgba([0, 0, 0, 255]));
+    // shows as 100×100 at 100, 50
+    let mut frame = Annotation::new(Shape::Rect([50, 100]), [255; 4], 4, [50, 50]);
+    frame.radius = 20;
+    let drawn = drawn_at_once(&img, &[frame], &mapping);
+    // a circular corner is symmetric along its diagonal
+    let mut worst = 0;
+    for i in 0..40 {
+        for j in 0..40 {
+            let a = drawn.get_pixel(96 + i, 46 + j).0[0];
+            let b = drawn.get_pixel(96 + j, 46 + i).0[0];
+            worst = worst.max(a.abs_diff(b));
+        }
+    }
+    assert!(worst <= 40, "{worst}");
+    assert_eq!(drawn.get_pixel(101, 51).0, [0, 0, 0, 255]);
+    assert_eq!(drawn.get_pixel(130, 50).0[0], 255, "the top line");
+    assert_eq!(drawn.get_pixel(100, 80).0[0], 255, "the left line");
+}

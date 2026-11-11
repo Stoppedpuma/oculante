@@ -589,7 +589,7 @@ pub fn edit_ui(ui: &mut egui::Ui, state: &mut OculanteState) {
                 ),
                 None => state.edit_state.annotate.stop(),
             }
-            let annotations = crate::ui::annotate::visible(&state.edit_state.image_op_stack, &state.edit_state.annotate);
+            let annotations = crate::ui::annotate::visible(&state.edit_state.image_op_stack);
 
             // Do the processing
             //
