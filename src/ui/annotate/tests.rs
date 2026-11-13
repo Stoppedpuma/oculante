@@ -384,10 +384,10 @@ fn canvas_frame(
 
 const NONE: egui::Modifiers = egui::Modifiers::NONE;
 
-/// A hidden one stays selected on its card, but Delete and the arrows leave it as it is: nothing
-/// on the image shows it is selected. It was removed or moved where it could not be seen.
+/// The arrow keys leave a hidden one alone, even when it's selected on its card: nothing on the
+/// image would show it moving. Delete removes it, since the card shows it's selected.
 #[test]
-fn hidden_ones_are_not_deleted_or_moved_by_the_keys() {
+fn hidden_ones_are_not_moved_by_the_keys() {
     let ctx = egui::Context::default();
     let mut hidden = arrow_at([10, 10], [50, 0]);
     hidden.hidden = true;
@@ -402,16 +402,36 @@ fn hidden_ones_are_not_deleted_or_moved_by_the_keys() {
     let left = canvas_frame(&ctx, &mut list, &mut state, &[(Key::ArrowRight, NONE)]);
     assert_eq!(list[0], hidden, "not moved");
     assert_eq!(left, vec![Key::ArrowRight], "to the next image");
-    canvas_frame(&ctx, &mut list, &mut state, &[(Key::Delete, NONE)]);
-    assert_eq!(list, vec![hidden.clone(), shown.clone()], "not removed");
-    // with a shown one selected as well, that one moves and is removed
+    // with a shown one selected as well, only that one moves
     state.selected = vec![0, 1];
     let left = canvas_frame(&ctx, &mut list, &mut state, &[(Key::ArrowRight, NONE)]);
     assert!(left.is_empty(), "the arrow moves what is selected only");
     assert_eq!(list[0], hidden);
     assert_eq!(list[1].start((200, 200)), [11, 50]);
+    // Delete removes both
     canvas_frame(&ctx, &mut list, &mut state, &[(Key::Backspace, NONE)]);
-    assert_eq!(list, vec![hidden]);
+    assert!(list.is_empty());
+}
+
+/// Hiding a selected one deselects it, so Delete can't remove it unseen
+#[test]
+fn hiding_deselects() {
+    let ctx = egui::Context::default();
+    let mut list = vec![arrow_at([10, 10], [50, 0]), arrow_at([10, 50], [50, 0])];
+    let mut state = AnnotateUi {
+        tool: Some(Tool::Select),
+        selected: vec![0, 1],
+        ..Default::default()
+    };
+    state.toggle_hidden(&mut list[0], 0);
+    assert!(list[0].hidden);
+    assert_eq!(state.selected, vec![1]);
+    canvas_frame(&ctx, &mut list, &mut state, &[(Key::Delete, NONE)]);
+    assert_eq!(list.len(), 1);
+    assert!(list[0].hidden, "the hidden one stays");
+    // shown again it stays deselected, until it's picked
+    state.toggle_hidden(&mut list[0], 0);
+    assert!(!list[0].hidden && state.selected.is_empty());
 }
 
 /// While a tool is picked the annotations take only their keys: the other shortcuts of the app

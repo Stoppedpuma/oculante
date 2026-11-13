@@ -162,14 +162,23 @@ impl AnnotateUi {
             .collect();
     }
 
-    /// What is selected and shown. What the keys, dragging, and the menu act on. A hidden annotation
-    /// stays selected on its card, it can be motified from the card still, but nothing on the image shows it.
+    /// What is selected and shown. What the arrow keys, dragging, and the menu act on. A hidden
+    /// annotation can still be selected on its card to change or delete it.
     fn shown(&self, annotations: &[Annotation]) -> Vec<usize> {
         self.selected
             .iter()
             .copied()
             .filter(|i| annotations.get(*i).is_some_and(|a| !a.hidden))
             .collect()
+    }
+
+    /// Hides or shows annotation `i`. Hiding also deselects it, since nothing on the image
+    /// would show it's selected.
+    fn toggle_hidden(&mut self, a: &mut Annotation, i: usize) {
+        a.hidden = !a.hidden;
+        if a.hidden {
+            self.selected.retain(|s| *s != i);
+        }
     }
 
     fn start_typing(&mut self, index: usize) {

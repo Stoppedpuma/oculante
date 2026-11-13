@@ -189,7 +189,7 @@ fn cards_ui(ui: &mut Ui, annotations: &mut Vec<Annotation>, state: &mut Annotate
                     .on_hover_text(if a.hidden { "Show" } else { "Hide" })
                     .clicked()
                 {
-                    a.hidden = !a.hidden;
+                    state.toggle_hidden(a, i);
                 }
                 if ui
                     .add(

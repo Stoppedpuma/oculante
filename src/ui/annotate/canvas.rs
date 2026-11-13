@@ -356,7 +356,8 @@ pub(super) fn take_key(
 
 /// Delete removes what is selected, Esc closes the menu, stops a drag, lets go of what is
 /// selected and then of the tool, Ctrl+A (Cmd+A on a Mac) selects everything shown, the arrows
-/// move what is selected. Only what is shown is acted on, hidden annotations stay as they are.
+/// move what is selected. Only what is shown is moved, Delete also removes a hidden annotation
+/// selected on its card.
 
 /// These keys are taken from the input, so they do interfere with the regular shortcuts.
 /// The arrows only while something is selected or dragged, otherwise they go to the next image as
@@ -402,8 +403,10 @@ fn keys(
     if escape && state.menu.take().is_some() {
         escape = false;
     }
-    if delete && !shown.is_empty() {
-        state.remove(annotations, shown.clone());
+    // hidden ones too: they can only be selected on their card, where it shows
+    if delete && !state.selected.is_empty() {
+        let selected = state.selected.clone();
+        state.remove(annotations, selected);
     }
     if escape {
         match state.drag.take() {
