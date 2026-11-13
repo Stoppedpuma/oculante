@@ -1026,7 +1026,7 @@ ANNOTATIONS_HEADER = (890, 90)
 SELECT_BUTTON = (780, 115, 222, 32)
 ANNOTATE_TOOLS = {
     name: (815 + 80 * (i % 3), 173 + 46 * (i // 3))
-    for i, name in enumerate(("arrow", "frame", "circle", "text", "pen", "redact"))
+    for i, name in enumerate(("arrow", "frame", "circle", "text", "pen", "line", "redact"))
 }
 # the row of stamps below the tools, under the spotlight and the counter
 ANNOTATE_STAMPS = [(815 + 76 * i, 310) for i in range(3)]
