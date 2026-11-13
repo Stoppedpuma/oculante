@@ -2067,3 +2067,58 @@ fn round_corners_stay_round_on_a_stretched_image() {
     assert_eq!(drawn.get_pixel(130, 50).0[0], 255, "the top line");
     assert_eq!(drawn.get_pixel(100, 80).0[0], 255, "the left line");
 }
+
+/// On a stretched image clicks go by the lines as shown: as far off them across the stretch as
+/// along it, round corners included. Along the stretch they reached further.
+#[test]
+fn clicks_are_exact_on_a_stretched_image() {
+    let mapping = stretched();
+    // shows as 100×100 at 100, 50, its lines 8 × √2 wide
+    let frame = Annotation::new(Shape::Rect([50, 100]), [255; 4], 8, [50, 50]);
+    let half = 4. * 2f32.sqrt();
+    let hit = |a: &Annotation, x: f32, y: f32| hits(a, &mapping, [x, y], 0.);
+    assert!(hit(&frame, 100. - half + 0.5, 100.));
+    assert!(
+        !hit(&frame, 100. - half - 1.5, 100.),
+        "left of the left line"
+    );
+    assert!(hit(&frame, 150., 50. - half + 0.5));
+    assert!(!hit(&frame, 150., 50. - half - 1.5), "above the top line");
+    // a round corner is hit on its curve, not in the corner it cuts off
+    let mut round = frame.clone();
+    round.radius = 20;
+    let r = 20. * 2f32.sqrt();
+    let on_curve = 100. + r - r / 2f32.sqrt();
+    assert!(hit(&round, on_curve, 50. + on_curve - 100.));
+    assert!(!hit(&round, 103., 53.), "the cut off corner");
+}
+
+/// On a stretched image what is redrawn and the box around what is selected reach as far as the
+/// lines do, sharp corners of a turned frame included, and no further
+#[test]
+fn boxes_fit_the_lines_on_a_stretched_image() {
+    let mapping = stretched();
+    let half = 4. * 2f32.sqrt();
+    let frame = Annotation::new(Shape::Rect([50, 100]), [255; 4], 8, [50, 50]);
+    // what is redrawn: the lines and 2 pixels for their smooth edge
+    let t = frame.transform(&mapping);
+    let drawn = area(&frame, t, (400, 200)).unwrap();
+    let left = (100. - half - 2.).floor() as u32;
+    let right = (200. + half + 2.).ceil() as u32;
+    assert_eq!((drawn.x, drawn.width), (left, right - left));
+    // turned by 45° its sharp corners point left and right
+    let middle = middle_in(&frame, &mapping).unwrap();
+    let turned = rotated(&frame, &mapping, middle, 45);
+    let bounds = selection_bounds(std::slice::from_ref(&turned), &[0], &mapping).unwrap();
+    // turning keeps the start on whole pixels, so its middle moves a little
+    let middle = middle_in(&turned, &mapping).unwrap();
+    let corner = (50. + half) * 2f32.sqrt();
+    assert!(
+        (bounds.drawn[0] - (middle[0] - corner)).abs() < 0.5,
+        "{bounds:?}"
+    );
+    assert!(
+        (bounds.drawn[2] - (middle[0] + corner)).abs() < 0.5,
+        "{bounds:?}"
+    );
+}

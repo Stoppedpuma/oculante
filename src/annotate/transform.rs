@@ -34,7 +34,7 @@ pub(crate) fn selection_bounds(
         .filter(|a| !a.hidden)
     {
         let t = a.transform(mapping);
-        if let (Some(s), Some(d)) = (extent(a, t, 0.), drawn_extent(a, t)) {
+        if let (Some(s), Some(d)) = (extent(a, t, 0.), extent(a, t, a.reach(t))) {
             shape = around(shape, s);
             drawn = around(drawn, d);
         }

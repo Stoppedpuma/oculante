@@ -148,21 +148,6 @@ pub(crate) fn scale_of(t: Transform) -> f32 {
     (t.sx * t.sy - t.kx * t.ky).abs().sqrt()
 }
 
-/// How much a transform scales things in the direction it shrinks them most
-pub(crate) fn least_scale(t: Transform) -> f32 {
-    let squares = t.sx * t.sx + t.kx * t.kx + t.ky * t.ky + t.sy * t.sy;
-    let det = t.sx * t.sy - t.kx * t.ky;
-    let least = (squares - (squares * squares - 4. * det * det).max(0.).sqrt()) / 2.;
-    least.max(0.).sqrt()
-}
-
-/// How much extra room lines need in an annotation's own coordinates on a stretched image.
-/// It's 1 when the image isn't stretched.
-pub(super) fn widening(t: Transform) -> f32 {
-    let scale = scale_of(t);
-    (scale / least_scale(t).max(scale * 0.01).max(1e-9)).max(1.)
-}
-
 /// `t` with the stretch taken out, closest transform that only moves, turns, mirrors and
 /// scales evenly. `centre` stays where `t` puts it.
 pub(crate) fn undistorted(t: Transform, centre: Point) -> Transform {
@@ -191,37 +176,28 @@ pub(crate) fn undistorted(t: Transform, centre: Point) -> Transform {
     linear.post_translate(at.x - moved.x, at.y - moved.y)
 }
 
-/// Left, top, right and bottom in the edited image of its bounds, grown by `grow` in its own
-/// coordinates. On a stretched image it grows enough to cover lines in every direction, so it
-/// can be a bit larger than needed.
+/// Left, top, right and bottom in the edited image of its bounds, grown by `grow` along its
+/// own sides as much as `t` scales lines (see `scale_of`). That covers its lines, sharp corners
+/// included, also on a stretched image.
 pub(super) fn extent(a: &Annotation, t: Transform, grow: f32) -> Option<[f32; 4]> {
     let b = a.bounds()?;
-    let grow = grow * widening(t);
-    let mut corners = [
-        Point::from_xy(b[0] - grow, b[1] - grow),
-        Point::from_xy(b[2] + grow, b[1] - grow),
-        Point::from_xy(b[0] - grow, b[3] + grow),
-        Point::from_xy(b[2] + grow, b[3] + grow),
-    ];
-    t.map_points(&mut corners);
-    Some(
-        corners
-            .iter()
-            .fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |e, c| {
-                [e[0].min(c.x), e[1].min(c.y), e[2].max(c.x), e[3].max(c.y)]
-            }),
-    )
-}
-
-/// The box around everything an annotation draws, lines and outline included. Unlike `extent`,
-/// the margin is the same on every side of a stretched image, so the selection box is even.
-pub(crate) fn drawn_extent(a: &Annotation, t: Transform) -> Option<[f32; 4]> {
-    if widening(t) <= 1.001 {
-        return extent(a, t, a.reach(t));
+    let unit = |x: f32, y: f32| {
+        let length = x.hypot(y).max(1e-9);
+        (x / length, y / length)
+    };
+    let (u, v) = (unit(t.sx, t.ky), unit(t.kx, t.sy));
+    let grow = grow * scale_of(t);
+    let mut e = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for (x, along) in [(b[0], -1.), (b[2], 1.)] {
+        for (y, across) in [(b[1], -1.), (b[3], 1.)] {
+            let mut c = Point::from_xy(x, y);
+            t.map_point(&mut c);
+            let x = c.x + (u.0 * along + v.0 * across) * grow;
+            let y = c.y + (u.1 * along + v.1 * across) * grow;
+            e = [e[0].min(x), e[1].min(y), e[2].max(x), e[3].max(y)];
+        }
     }
-    let e = extent(a, t, 0.)?;
-    let reach = a.reach(t) * scale_of(t);
-    Some([e[0] - reach, e[1] - reach, e[2] + reach, e[3] + reach])
+    Some(e)
 }
 
 /// The ones that are shown and have at least half of their area inside the box between two
@@ -265,7 +241,10 @@ pub(crate) fn hits(a: &Annotation, mapping: &Mapping, p: [f32; 2], slack: f32) -
     };
     let mut q = Point::from_xy(p[0], p[1]);
     back.map_point(&mut q);
-    touches_widened(a, q, slack / least_scale(t).max(0.001), widening(t))
+    // along its own sides, as large as it's shown
+    let axes = [t.sx.hypot(t.ky), t.kx.hypot(t.sy)];
+    let q = Point::from_xy(q.x * axes[0], q.y * axes[1]);
+    touches_shown(a, q, axes, scale_of(t), slack)
 }
 
 /// How far a point, from the centre of an ellipse with these radii, is from its line.
@@ -306,27 +285,31 @@ fn segment_distance(q: Point, a: Point, b: Point) -> f32 {
 /// Whether a point in the annotation's own coordinates is on it, or `slack` off it
 #[cfg(test)]
 pub(super) fn touches(a: &Annotation, q: Point, slack: f32) -> bool {
-    touches_widened(a, q, slack, 1.)
+    touches_shown(a, q, [1., 1.], 1., slack)
 }
 
-/// Like `touches`, with lines and outline `widen` times wider (see `widening`)
-fn touches_widened(a: &Annotation, q: Point, slack: f32, widen: f32) -> bool {
+/// Like `touches`, with its own coordinates scaled by `axes` along each side and its lines by
+/// `scale`, as it's shown. Its sides are at right angles in the edited image, so distances
+/// here are distances on screen.
+fn touches_shown(a: &Annotation, q: Point, axes: [f32; 2], scale: f32, slack: f32) -> bool {
+    let at = |x: f32, y: f32| Point::from_xy(x * axes[0], y * axes[1]);
+    let point = |p: [i32; 2]| at(p[0] as f32, p[1] as f32);
     // its outline is a part of it
-    let slack = slack + a.outline_width() * widen;
-    let near = a.line_width() / 2. * widen + slack;
-    let point = |p: [i32; 2]| Point::from_xy(p[0] as f32, p[1] as f32);
+    let slack = slack + a.outline_width() * scale;
+    let near = a.line_width() * scale / 2. + slack;
     let to_line = |p0: [i32; 2], p1: [i32; 2]| segment_distance(q, point(p0), point(p1));
     match &a.shape {
-        Shape::Arrow(to) => match arrow_head_corners(*to, a.line_width()) {
+        Shape::Arrow(to) => match arrow_corners(point([0, 0]), point(*to), a.line_width(), scale) {
             None => to_line([0, 0], *to) <= near,
-            Some([tip, left, right]) => [(Point::zero(), tip), (left, tip), (right, tip)]
+            Some([tip, left, right]) => [(point([0, 0]), tip), (left, tip), (right, tip)]
                 .iter()
                 .any(|(p0, p1)| segment_distance(q, *p0, *p1) <= near),
         },
         Shape::Line(to) => to_line([0, 0], *to) <= near,
         Shape::Rect(size) => {
-            let (w, h) = (size[0] as f32, size[1] as f32);
-            let r = a.corner_radius();
+            let (w, h) = (size[0] as f32 * axes[0], size[1] as f32 * axes[1]);
+            // as `box_path` rounds it
+            let r = (a.radius as f32 * scale).min(w / 2.).min(h / 2.);
             if r <= 0. {
                 let inside = |by: f32| q.x >= -by && q.y >= -by && q.x <= w + by && q.y <= h + by;
                 return inside(near) && !inside(-near);
@@ -340,7 +323,7 @@ fn touches_widened(a: &Annotation, q: Point, slack: f32, widen: f32) -> bool {
             from_line.abs() <= near
         }
         Shape::Ellipse(size) => {
-            let (rx, ry) = (size[0] as f32 / 2., size[1] as f32 / 2.);
+            let (rx, ry) = (size[0] as f32 * axes[0] / 2., size[1] as f32 * axes[1] / 2.);
             if rx.min(ry) <= 0. {
                 return to_line([0, 0], *size) <= near;
             }
@@ -351,14 +334,19 @@ fn touches_widened(a: &Annotation, q: Point, slack: f32, widen: f32) -> bool {
             points => points.windows(2).any(|w| to_line(w[0], w[1]) <= near),
         },
         Shape::Text(_) | Shape::Redact { .. } | Shape::Stamp(_) => a.bounds().is_some_and(|b| {
-            q.x >= b[0] - slack && q.y >= b[1] - slack && q.x <= b[2] + slack && q.y <= b[3] + slack
+            let (from, to) = (at(b[0], b[1]), at(b[2], b[3]));
+            q.x >= from.x - slack
+                && q.y >= from.y - slack
+                && q.x <= to.x + slack
+                && q.y <= to.y + slack
         }),
         Shape::Counter(_) => {
             let r = a.width as f32 / 2.;
-            (q.x - r).hypot(q.y - r) <= r + slack
+            let centre = at(r, r);
+            (q.x - centre.x).hypot(q.y - centre.y) <= r * axes[0] + slack
         }
         Shape::Spotlight { size, oval } => {
-            let (rx, ry) = (size[0] as f32 / 2., size[1] as f32 / 2.);
+            let (rx, ry) = (size[0] as f32 * axes[0] / 2., size[1] as f32 * axes[1] / 2.);
             let (dx, dy) = (q.x - rx, q.y - ry);
             if *oval {
                 let inside = (dx / rx.max(0.5)).powi(2) + (dy / ry.max(0.5)).powi(2) <= 1.;

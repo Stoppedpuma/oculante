@@ -409,6 +409,7 @@ impl Annotation {
     }
 
     /// Of a frame or a spotlight that is a box, at most half of its shorter side
+    #[cfg(test)]
     fn corner_radius(&self) -> f32 {
         match self.shape {
             Shape::Rect(size) | Shape::Spotlight { size, oval: false } => (self.radius as f32)

@@ -14,6 +14,7 @@ pub(super) fn arrow_head(width: f32, length: f32) -> (f32, f32) {
 
 /// The three points of an arrowhead at `to`: the tip and the ends of its two lines. The tip
 /// sits half a line back from `to`, so the round line around it ends at `to`.
+#[cfg(test)]
 pub(super) fn arrow_head_corners(to: [i32; 2], width: f32) -> Option<[Point; 3]> {
     arrow_corners(
         Point::zero(),
@@ -25,7 +26,7 @@ pub(super) fn arrow_head_corners(to: [i32; 2], width: f32) -> Option<[Point; 3]>
 
 /// Like `arrow_head_corners`, for an arrow drawn `scale` times its own size. Working it out
 /// where it's drawn keeps the head symmetric on a stretched image.
-fn arrow_corners(from: Point, to: Point, width: f32, scale: f32) -> Option<[Point; 3]> {
+pub(super) fn arrow_corners(from: Point, to: Point, width: f32, scale: f32) -> Option<[Point; 3]> {
     let (x, y) = (to.x - from.x, to.y - from.y);
     let length = x.hypot(y);
     if length < scale.max(1e-6) {
